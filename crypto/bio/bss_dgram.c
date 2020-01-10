@@ -76,11 +76,11 @@ static const BIO_METHOD methods_dgramp = {
     dgram_write,
     dgram_read,
     dgram_puts,
-    NULL,                       /* dgram_gets, */
+    NULL,                       /* dgram_gets,         */
     dgram_ctrl,
     dgram_new,
     dgram_free,
-    NULL,
+    NULL,                       /* dgram_callback_ctrl */
 };
 
 # ifndef OPENSSL_NO_SCTP
@@ -90,11 +90,11 @@ static const BIO_METHOD methods_dgramp_sctp = {
     dgram_sctp_write,
     dgram_sctp_read,
     dgram_sctp_puts,
-    NULL,                       /* dgram_gets, */
+    NULL,                       /* dgram_gets,         */
     dgram_sctp_ctrl,
     dgram_sctp_new,
     dgram_sctp_free,
-    NULL,
+    NULL,                       /* dgram_callback_ctrl */
 };
 # endif
 
@@ -130,7 +130,6 @@ typedef struct bio_dgram_sctp_data_st {
     int ccs_sent;
     int save_shutdown;
     int peer_auth_tested;
-    bio_dgram_sctp_save_message saved_message;
 } bio_dgram_sctp_data;
 # endif
 
@@ -783,6 +782,15 @@ static long dgram_ctrl(BIO *b, int cmd, long num, void *ptr)
     case BIO_CTRL_DGRAM_GET_MTU_OVERHEAD:
         ret = dgram_get_mtu_overhead(data);
         break;
+
+    /*
+     * BIO_CTRL_DGRAM_SCTP_SET_IN_HANDSHAKE is used here for compatibility
+     * reasons. When BIO_CTRL_DGRAM_SET_PEEK_MODE was first defined its value
+     * was incorrectly clashing with BIO_CTRL_DGRAM_SCTP_SET_IN_HANDSHAKE. The
+     * value has been updated to a non-clashing value. However to preserve
+     * binary compatiblity we now respond to both the old value and the new one
+     */
+    case BIO_CTRL_DGRAM_SCTP_SET_IN_HANDSHAKE:
     case BIO_CTRL_DGRAM_SET_PEEK_MODE:
         data->peekmode = (unsigned int)num;
         break;
@@ -962,10 +970,8 @@ static int dgram_sctp_free(BIO *a)
         return 0;
 
     data = (bio_dgram_sctp_data *) a->ptr;
-    if (data != NULL) {
-        OPENSSL_free(data->saved_message.data);
+    if (data != NULL)
         OPENSSL_free(data);
-    }
 
     return (1);
 }
@@ -1067,22 +1073,6 @@ static int dgram_sctp_read(BIO *b, char *out, int outl)
                     struct sctp_event_subscribe event;
                     socklen_t eventsize;
 #  endif
-                    /*
-                     * If a message has been delayed until the socket is dry,
-                     * it can be sent now.
-                     */
-                    if (data->saved_message.length > 0) {
-                        i = dgram_sctp_write(data->saved_message.bio,
-                                         data->saved_message.data,
-                                         data->saved_message.length);
-                        if (i < 0) {
-                            ret = i;
-                            break;
-                        }
-                        OPENSSL_free(data->saved_message.data);
-                        data->saved_message.data = NULL;
-                        data->saved_message.length = 0;
-                    }
 
                     /* disable sender dry event */
 #  ifdef SCTP_EVENT
@@ -1265,27 +1255,15 @@ static int dgram_sctp_write(BIO *b, const char *in, int inl)
         sinfo = &handshake_sinfo;
     }
 
-    /*
-     * If we have to send a shutdown alert message and the socket is not dry
-     * yet, we have to save it and send it as soon as the socket gets dry.
-     */
+    /* We can only send a shutdown alert if the socket is dry */
     if (data->save_shutdown) {
         ret = BIO_dgram_sctp_wait_for_dry(b);
-        if (ret < 0) {
+        if (ret < 0)
             return -1;
-        }
         if (ret == 0) {
-            char *tmp;
-            data->saved_message.bio = b;
-            if ((tmp = OPENSSL_malloc(inl)) == NULL) {
-                BIOerr(BIO_F_DGRAM_SCTP_WRITE, ERR_R_MALLOC_FAILURE);
-                return -1;
-            }
-            OPENSSL_free(data->saved_message.data);
-            data->saved_message.data = tmp;
-            memcpy(data->saved_message.data, in, inl);
-            data->saved_message.length = inl;
-            return inl;
+            BIO_clear_retry_flags(b);
+            BIO_set_retry_write(b);
+            return -1;
         }
     }
 
@@ -1473,6 +1451,7 @@ static long dgram_sctp_ctrl(BIO *b, int cmd, long num, void *ptr)
          * we need to deactivate an old key
          */
         data->ccs_sent = 1;
+        /* fall-through */
 
     case BIO_CTRL_DGRAM_SCTP_AUTH_CCS_RCVD:
         /* Returns 0 on success, -1 otherwise. */

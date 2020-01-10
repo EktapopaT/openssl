@@ -2,6 +2,7 @@
 
 =head1 NAME
 
+openssl-req,
 req - PKCS#10 certificate request and certificate generating utility
 
 =head1 SYNOPSIS
@@ -204,16 +205,18 @@ GOST R 34.11-94 (B<-md_gost94>).
 
 =item B<-config filename>
 
-this allows an alternative configuration file to be specified,
-this overrides the compile time filename or any specified in
-the B<OPENSSL_CONF> environment variable.
+this allows an alternative configuration file to be specified.
+Optional; for a description of the default value,
+see L<openssl(1)/COMMAND SUMMARY>.
 
 =item B<-subj arg>
 
 sets subject name for new request or supersedes the subject name
 when processing a request.
-The arg must be formatted as I</type0=value0/type1=value1/type2=...>,
-characters may be escaped by \ (backslash), no spaces are skipped.
+The arg must be formatted as I</type0=value0/type1=value1/type2=...>.
+Keyword characters may be escaped by \ (backslash), and whitespace is retained.
+Empty values are permitted, but the corresponding type will not be included
+in the request.
 
 =item B<-multivalue-rdn>
 
@@ -233,6 +236,9 @@ a self signed root CA. The extensions added to the certificate
 using the B<set_serial> option, a large random number will be used for
 the serial number.
 
+If existing request is specified with the B<-in> option, it is converted
+to the self signed certificate otherwise new request is created.
+
 =item B<-days n>
 
 when the B<-x509> option is being used this specifies the number of
@@ -242,7 +248,6 @@ days to certify the certificate for. The default is 30 days.
 
 serial number to use when outputting a self signed certificate. This
 may be specified as a decimal value or a hex value if preceded by B<0x>.
-It is possible to use negative serial numbers but this is not recommended.
 
 =item B<-extensions section>
 
@@ -366,7 +371,6 @@ option. For compatibility B<encrypt_rsa_key> is an equivalent option.
 
 This option specifies the digest algorithm to use.
 Any digest supported by the OpenSSL B<dgst> command can be used.
-If not present then MD5 is used.
 This option can be overridden on the command line.
 
 =item B<string_mask>
@@ -624,12 +628,6 @@ then the B<SET OF> is missing and the encoding is technically invalid (but
 it is tolerated). See the description of the command line option B<-asn1-kludge>
 for more information.
 
-=head1 ENVIRONMENT VARIABLES
-
-The variable B<OPENSSL_CONF> if defined allows an alternative configuration
-file location to be specified, it will be overridden by the B<-config> command
-line switch if it is present.
-
 =head1 BUGS
 
 OpenSSL's handling of T61Strings (aka TeletexStrings) is broken: it effectively
@@ -655,7 +653,7 @@ L<x509v3_config(5)>
 
 =head1 COPYRIGHT
 
-Copyright 2000-2016 The OpenSSL Project Authors. All Rights Reserved.
+Copyright 2000-2018 The OpenSSL Project Authors. All Rights Reserved.
 
 Licensed under the OpenSSL license (the "License").  You may not use
 this file except in compliance with the License.  You can obtain a copy

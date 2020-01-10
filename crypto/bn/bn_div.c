@@ -1,5 +1,5 @@
 /*
- * Copyright 1995-2016 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 1995-2018 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the OpenSSL license (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -240,6 +240,7 @@ int BN_div(BIGNUM *dv, BIGNUM *rm, const BIGNUM *num, const BIGNUM *divisor,
     wnum.neg = 0;
     wnum.d = &(snum->d[loop]);
     wnum.top = div_n;
+    wnum.flags = BN_FLG_STATIC_DATA;
     /*
      * only needed when BN_ucmp messes up the values between top and max
      */
@@ -254,9 +255,9 @@ int BN_div(BIGNUM *dv, BIGNUM *rm, const BIGNUM *num, const BIGNUM *divisor,
     wnump = &(snum->d[num_n - 1]);
 
     /* Setup to 'res' */
-    res->neg = (num->neg ^ divisor->neg);
     if (!bn_wexpand(res, (loop + 1)))
         goto err;
+    res->neg = (num->neg ^ divisor->neg);
     res->top = loop - no_branch;
     resp = &(res->d[loop - 1]);
 

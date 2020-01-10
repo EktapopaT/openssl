@@ -1,5 +1,5 @@
 #! /usr/bin/env perl
-# Copyright 2016 The OpenSSL Project Authors. All Rights Reserved.
+# Copyright 2016-2018 The OpenSSL Project Authors. All Rights Reserved.
 #
 # Licensed under the OpenSSL license (the "License").  You may not use
 # this file except in compliance with the License.  You can obtain a copy
@@ -13,7 +13,9 @@ use File::Spec::Functions;
 use File::Basename;
 use File::Copy;
 use File::Path;
-use if $^O ne "VMS", 'File::Glob' => qw/glob/;
+use FindBin;
+use lib "$FindBin::Bin/perl";
+use OpenSSL::Glob;
 use Getopt::Long;
 use Pod::Usage;
 
@@ -34,6 +36,8 @@ GetOptions(\%options,
            #'in=s@',             # Explicit files to process (ignores sourcedir)
            #'section=i',         # Default section used for --in files
            'type=s',            # The result type, 'man' or 'html'
+           'suffix:s',          # Suffix to add to the extension.
+                                # Only used with type=man
            'remove',            # To remove files rather than writing them
            'dry-run|n',         # Only output file names on STDOUT
            'debug|D+',
@@ -53,6 +57,8 @@ pod2usage(1) unless ( defined $options{subdir}
                       && defined $options{type}
                       && ($options{type} eq 'man'
                           || $options{type} eq 'html') );
+pod2usage(1) if ( $options{type} eq 'html'
+                  && defined $options{suffix} );
 
 if ($options{debug}) {
     print STDERR "DEBUG: options:\n";
@@ -62,6 +68,8 @@ if ($options{debug}) {
         if defined $options{destdir};
     print STDERR "DEBUG:   --type      = $options{type}\n"
         if defined $options{type};
+    print STDERR "DEBUG:   --suffix    = $options{suffix}\n"
+        if defined $options{suffix};
     foreach (keys %{$options{subdir}}) {
         print STDERR "DEBUG:   --subdir    = $_=$options{subdir}->{$_}\n";
     }
@@ -90,10 +98,10 @@ foreach my $subdir (keys %{$options{subdir}}) {
 
         my $updir = updir();
         my $name = uc $podname;
-        my $suffix = { man  => ".$podinfo{section}",
+        my $suffix = { man  => ".$podinfo{section}".($options{suffix} // ""),
                        html => ".html" } -> {$options{type}};
         my $generate = { man  => "pod2man --name=$name --section=$podinfo{section} --center=OpenSSL --release=$config{version} \"$podpath\"",
-                         html => "pod2html \"--podroot=$options{sourcedir}\" --htmldir=$updir --podpath=apps:crypto:ssl \"--infile=$podpath\" \"--title=$podname\""
+                         html => "pod2html \"--podroot=$options{sourcedir}\" --htmldir=$updir --podpath=apps:crypto:ssl \"--infile=$podpath\" \"--title=$podname\" --quiet"
                          } -> {$options{type}};
         my $output_dir = catdir($options{destdir}, "man$podinfo{section}");
         my $output_file = $podname . $suffix;
@@ -107,6 +115,32 @@ foreach my $subdir (keys %{$options{subdir}}) {
                 @output = `$generate`;
                 map { s|href="http://man\.he\.net/(man\d/[^"]+)(?:\.html)?"|href="../$1.html|g; } @output
                     if $options{type} eq "html";
+                if ($options{type} eq "man") {
+                    # Because some *roff parsers are more strict than others,
+                    # multiple lines in the NAME section must be merged into
+                    # one.
+                    my $in_name = 0;
+                    my $name_line = "";
+                    my @newoutput = ();
+                    foreach (@output) {
+                        if ($in_name) {
+                            if (/^\.SH "/) {
+                                $in_name = 0;
+                                push @newoutput, $name_line."\n";
+                            } else {
+                                chomp (my $x = $_);
+                                $name_line .= " " if $name_line;
+                                $name_line .= $x;
+                                next;
+                            }
+                        }
+                        if (/^\.SH +"NAME" *$/) {
+                            $in_name = 1;
+                        }
+                        push @newoutput, $_;
+                    }
+                    @output = @newoutput;
+                }
             }
             print STDERR "DEBUG: Done processing\n" if $options{debug};
 
@@ -177,6 +211,7 @@ B<process_docs.pl>
 [B<--sourcedir>=I<dir>]
 B<--destdir>=I<dir>
 B<--type>=B<man>|B<html>
+[B<--suffix>=I<suffix>]
 [B<--remove>]
 [B<--dry-run>|B<-n>]
 [B<--debug>|B<-D>]
@@ -209,6 +244,10 @@ Top directory where the resulting files should end up
 
 Type of output to produce.  Currently supported are man pages and HTML files.
 
+=item B<--suffix>=I<suffix>
+
+A suffix added to the extension.  Only valid with B<--type>=B<man>
+
 =item B<--remove>
 
 Instead of writing the files, remove them.
@@ -225,7 +264,7 @@ Print extra debugging output.
 
 =head1 COPYRIGHT
 
-Copyright 2013-2016 The OpenSSL Project Authors. All Rights Reserved.
+Copyright 2013-2018 The OpenSSL Project Authors. All Rights Reserved.
 
 Licensed under the OpenSSL license (the "License").  You may not use
 this file except in compliance with the License.  You can obtain a copy

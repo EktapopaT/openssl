@@ -1,5 +1,5 @@
 /*
- * Copyright 1995-2016 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 1995-2018 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the OpenSSL license (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -58,7 +58,6 @@ static void list_type(FUNC_TYPE ft);
 static void list_disabled(void);
 char *default_config_file = NULL;
 
-static CONF *config = NULL;
 BIO *bio_in = NULL;
 BIO *bio_out = NULL;
 BIO *bio_err = NULL;
@@ -70,8 +69,8 @@ static int apps_startup()
 #endif
 
     /* Set non-default library initialisation settings */
-    if (!OPENSSL_init_crypto(OPENSSL_INIT_ENGINE_ALL_BUILTIN
-                             | OPENSSL_INIT_LOAD_CONFIG, NULL))
+    if (!OPENSSL_init_ssl(OPENSSL_INIT_ENGINE_ALL_BUILTIN
+                          | OPENSSL_INIT_LOAD_CONFIG, NULL))
         return 0;
 
 #ifndef OPENSSL_NO_UI
@@ -155,8 +154,13 @@ int main(int argc, char *argv[])
 #endif
     }
 
-    if (!apps_startup())
+    if (!apps_startup()) {
+        BIO_printf(bio_err,
+                   "FATAL: Startup failure (dev note: apps_startup() failed)\n");
+        ERR_print_errors(bio_err);
+        ret = 1;
         goto end;
+    }
 
     prog = prog_init();
     pname = opt_progname(argv[0]);
@@ -184,7 +188,7 @@ int main(int argc, char *argv[])
     for (;;) {
         ret = 0;
         /* Read a line, continue reading if line ends with \ */
-        for (p = buf, n = sizeof buf, i = 0, first = 1; n > 0; first = 0) {
+        for (p = buf, n = sizeof(buf), i = 0, first = 1; n > 0; first = 0) {
             prompt = first ? "OpenSSL> " : "> ";
             p[0] = '\0';
 #ifndef READLINE
@@ -248,8 +252,6 @@ int main(int argc, char *argv[])
  end:
     OPENSSL_free(copied_argv);
     OPENSSL_free(default_config_file);
-    NCONF_free(config);
-    config = NULL;
     lh_FUNCTION_free(prog);
     OPENSSL_free(arg.argv);
 
@@ -332,6 +334,7 @@ int list_main(int argc, char **argv)
         switch (o) {
         case OPT_EOF:  /* Never hit, but suppresses warning */
         case OPT_ERR:
+opthelp:
             BIO_printf(bio_err, "%s: Use -help for summary.\n", prog);
             return 1;
         case OPT_HELP:
@@ -361,11 +364,13 @@ int list_main(int argc, char **argv)
         }
         done = 1;
     }
-
-    if (!done) {
-        BIO_printf(bio_err, "%s: Use -help for summary.\n", prog);
-        return 1;
+    if (opt_num_rest() != 0) {
+        BIO_printf(bio_err, "Extra arguments given.\n");
+        goto opthelp;
     }
+
+    if (!done)
+        goto opthelp;
 
     return 0;
 }
@@ -548,7 +553,7 @@ static void list_disabled(void)
 #ifdef OPENSSL_NO_BF
     BIO_puts(bio_out, "BF\n");
 #endif
-#ifndef OPENSSL_NO_BLAKE2
+#ifdef OPENSSL_NO_BLAKE2
     BIO_puts(bio_out, "BLAKE2\n");
 #endif
 #ifdef OPENSSL_NO_CAMELLIA

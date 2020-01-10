@@ -1,5 +1,5 @@
 /*
- * Copyright 1995-2016 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 1995-2018 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the OpenSSL license (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -167,8 +167,6 @@ void bio_sock_cleanup_int(void)
 # endif
 }
 
-# if !defined(OPENSSL_SYS_VMS) || __VMS_VER >= 70000000
-
 int BIO_socket_ioctl(int fd, long type, void *arg)
 {
     int i;
@@ -206,7 +204,6 @@ int BIO_socket_ioctl(int fd, long type, void *arg)
         SYSerr(SYS_F_IOCTLSOCKET, get_last_socket_error());
     return (i);
 }
-# endif                         /* __VMS_VER */
 
 # if OPENSSL_API_COMPAT < 0x10100000L
 int BIO_get_accept_socket(char *host, int bind_mode)
@@ -320,7 +317,7 @@ int BIO_socket_nbio(int s, int mode)
 
     l = fcntl(s, F_GETFL, 0);
     if (l == -1) {
-        SYSerr(SYS_F_FCNTL, get_last_rtl_error());
+        SYSerr(SYS_F_FCNTL, get_last_sys_error());
         ret = -1;
     } else {
 #  if defined(O_NONBLOCK)
@@ -338,7 +335,7 @@ int BIO_socket_nbio(int s, int mode)
         ret = fcntl(s, F_SETFL, l);
 
         if (ret < 0) {
-            SYSerr(SYS_F_FCNTL, get_last_rtl_error());
+            SYSerr(SYS_F_FCNTL, get_last_sys_error());
         }
     }
 # else

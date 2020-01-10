@@ -1,5 +1,5 @@
 /*
- * Copyright 2015-2016 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2015-2018 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the OpenSSL license (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -127,6 +127,8 @@ static int test_bin(const char *value, unsigned char **buf, size_t *buflen)
     long len;
 
     *buflen = 0;
+
+    /* Check for empty value */
     if (!*value) {
         /*
          * Don't return NULL for zero length buffer.
@@ -141,6 +143,14 @@ static int test_bin(const char *value, unsigned char **buf, size_t *buflen)
         *buflen = 0;
         return 1;
     }
+
+    /* Check for NULL literal */
+    if (strcmp(value, "NULL") == 0) {
+        *buf = NULL;
+        *buflen = 0;
+        return 1;
+    }
+
     /* Check for string literal */
     if (value[0] == '"') {
         size_t vlen;
@@ -155,6 +165,7 @@ static int test_bin(const char *value, unsigned char **buf, size_t *buflen)
         return 1;
     }
 
+    /* Otherwise assume as hex literal and convert it to binary buffer */
     *buf = OPENSSL_hexstr2buf(value, &len);
     if (!*buf) {
         fprintf(stderr, "Value=%s\n", value);
@@ -262,6 +273,7 @@ static const struct evp_test_method pderive_test_method;
 static const struct evp_test_method pbe_test_method;
 static const struct evp_test_method encode_test_method;
 static const struct evp_test_method kdf_test_method;
+static const struct evp_test_method keypair_test_method;
 
 static const struct evp_test_method *evp_test_list[] = {
     &digest_test_method,
@@ -275,6 +287,7 @@ static const struct evp_test_method *evp_test_list[] = {
     &pbe_test_method,
     &encode_test_method,
     &kdf_test_method,
+    &keypair_test_method,
     NULL
 };
 
@@ -458,6 +471,18 @@ static int check_unsupported()
         ERR_clear_error();
         return 1;
     }
+#ifndef OPENSSL_NO_EC
+    /*
+     * If EC support is enabled we should catch also EC_R_UNKNOWN_GROUP as an
+     * hint to an unsupported algorithm/curve (e.g. if binary EC support is
+     * disabled).
+     */
+    if (ERR_GET_LIB(err) == ERR_LIB_EC
+        && ERR_GET_REASON(err) == EC_R_UNKNOWN_GROUP) {
+        ERR_clear_error();
+        return 1;
+    }
+#endif /* OPENSSL_NO_EC */
     return 0;
 }
 
@@ -640,7 +665,7 @@ int main(int argc, char **argv)
 
     memset(&t, 0, sizeof(t));
     t.start_line = -1;
-    in = BIO_new_file(argv[1], "r");
+    in = BIO_new_file(argv[1], "rb");
     if (in == NULL) {
         fprintf(stderr, "Can't open %s for reading\n", argv[1]);
         return 1;
@@ -880,12 +905,12 @@ static int cipher_test_parse(struct evp_test *t, const char *keyword,
 }
 
 static int cipher_test_enc(struct evp_test *t, int enc,
-                           size_t out_misalign, size_t inp_misalign)
+                           size_t out_misalign, size_t inp_misalign, int frag)
 {
     struct cipher_data *cdat = t->data;
     unsigned char *in, *out, *tmp = NULL;
-    size_t in_len, out_len;
-    int tmplen, tmpflen;
+    size_t in_len, out_len, donelen = 0;
+    int tmplen, chunklen, tmpflen;
     EVP_CIPHER_CTX *ctx = NULL;
     const char *err;
     err = "INTERNAL_ERROR";
@@ -983,15 +1008,63 @@ static int cipher_test_enc(struct evp_test *t, int enc,
         }
     }
     if (cdat->aad) {
-        if (!EVP_CipherUpdate(ctx, NULL, &tmplen, cdat->aad, cdat->aad_len)) {
-            err = "AAD_SET_ERROR";
-            goto err;
+        err = "AAD_SET_ERROR";
+        if (!frag) {
+            if (!EVP_CipherUpdate(ctx, NULL, &chunklen, cdat->aad,
+                                  cdat->aad_len))
+                goto err;
+        } else {
+            /*
+             * Supply the AAD in chunks less than the block size where possible
+             */
+            if (cdat->aad_len > 0) {
+                if (!EVP_CipherUpdate(ctx, NULL, &chunklen, cdat->aad, 1))
+                    goto err;
+                donelen++;
+            }
+            if (cdat->aad_len > 2) {
+                if (!EVP_CipherUpdate(ctx, NULL, &chunklen, cdat->aad + donelen,
+                                      cdat->aad_len - 2))
+                    goto err;
+                donelen += cdat->aad_len - 2;
+            }
+            if (cdat->aad_len > 1
+                    && !EVP_CipherUpdate(ctx, NULL, &chunklen,
+                                         cdat->aad + donelen, 1))
+                goto err;
         }
     }
     EVP_CIPHER_CTX_set_padding(ctx, 0);
     err = "CIPHERUPDATE_ERROR";
-    if (!EVP_CipherUpdate(ctx, tmp + out_misalign, &tmplen, in, in_len))
-        goto err;
+    tmplen = 0;
+    if (!frag) {
+        /* We supply the data all in one go */
+        if (!EVP_CipherUpdate(ctx, tmp + out_misalign, &tmplen, in, in_len))
+            goto err;
+    } else {
+        /* Supply the data in chunks less than the block size where possible */
+        if (in_len > 0) {
+            if (!EVP_CipherUpdate(ctx, tmp + out_misalign, &chunklen, in, 1))
+                goto err;
+            tmplen += chunklen;
+            in++;
+            in_len--;
+        }
+        if (in_len > 1) {
+            if (!EVP_CipherUpdate(ctx, tmp + out_misalign + tmplen, &chunklen,
+                                  in, in_len - 1))
+                goto err;
+            tmplen += chunklen;
+            in += in_len - 1;
+            in_len = 1;
+        }
+        if (in_len > 0 ) {
+            if (!EVP_CipherUpdate(ctx, tmp + out_misalign + tmplen, &chunklen,
+                                  in, 1))
+                goto err;
+            tmplen += chunklen;
+        }
+    }
     if (cdat->aead == EVP_CIPH_CCM_MODE)
         tmpflen = 0;
     else {
@@ -1032,7 +1105,7 @@ static int cipher_test_enc(struct evp_test *t, int enc,
 static int cipher_test_run(struct evp_test *t)
 {
     struct cipher_data *cdat = t->data;
-    int rv;
+    int rv, frag = 0;
     size_t out_misalign, inp_misalign;
 
     if (!cdat->key) {
@@ -1050,21 +1123,25 @@ static int cipher_test_run(struct evp_test *t)
         t->err = "NO_TAG";
         return 0;
     }
-    for (out_misalign = 0; out_misalign <= 1; out_misalign++) {
+    for (out_misalign = 0; out_misalign <= 1;) {
         static char aux_err[64];
         t->aux_err = aux_err;
         for (inp_misalign = (size_t)-1; inp_misalign != 2; inp_misalign++) {
             if (inp_misalign == (size_t)-1) {
                 /* kludge: inp_misalign == -1 means "exercise in-place" */
-                BIO_snprintf(aux_err, sizeof(aux_err), "%s in-place",
-                             out_misalign ? "misaligned" : "aligned");
-            } else {
-                BIO_snprintf(aux_err, sizeof(aux_err), "%s output and %s input",
+                BIO_snprintf(aux_err, sizeof(aux_err),
+                             "%s in-place, %sfragmented",
                              out_misalign ? "misaligned" : "aligned",
-                             inp_misalign ? "misaligned" : "aligned");
+                             frag ? "" : "not ");
+            } else {
+                BIO_snprintf(aux_err, sizeof(aux_err),
+                             "%s output and %s input, %sfragmented",
+                             out_misalign ? "misaligned" : "aligned",
+                             inp_misalign ? "misaligned" : "aligned",
+                             frag ? "" : "not ");
             }
             if (cdat->enc) {
-                rv = cipher_test_enc(t, 1, out_misalign, inp_misalign);
+                rv = cipher_test_enc(t, 1, out_misalign, inp_misalign, frag);
                 /* Not fatal errors: return */
                 if (rv != 1) {
                     if (rv < 0)
@@ -1073,7 +1150,7 @@ static int cipher_test_run(struct evp_test *t)
                 }
             }
             if (cdat->enc != 1) {
-                rv = cipher_test_enc(t, 0, out_misalign, inp_misalign);
+                rv = cipher_test_enc(t, 0, out_misalign, inp_misalign, frag);
                 /* Not fatal errors: return */
                 if (rv != 1) {
                     if (rv < 0)
@@ -1081,6 +1158,21 @@ static int cipher_test_run(struct evp_test *t)
                     return 1;
                 }
             }
+        }
+
+        if (out_misalign == 1 && frag == 0) {
+            /*
+             * XTS, CCM and Wrap modes have special requirements about input
+             * lengths so we don't fragment for those
+             */
+            if (cdat->aead == EVP_CIPH_CCM_MODE
+                    || EVP_CIPHER_mode(cdat->cipher) == EVP_CIPH_XTS_MODE
+                     || EVP_CIPHER_mode(cdat->cipher) == EVP_CIPH_WRAP_MODE)
+                break;
+            out_misalign = 0;
+            frag++;
+        } else {
+            out_misalign++;
         }
     }
     t->aux_err = NULL;
@@ -1178,7 +1270,7 @@ static int mac_test_run(struct evp_test *t)
     size_t mac_len;
 
 #ifdef OPENSSL_NO_DES
-    if (strstr(mdata->alg, "DES") != NULL) {
+    if (mdata->alg != NULL && strstr(mdata->alg, "DES") != NULL) {
         /* Skip DES */
         err = NULL;
         goto err;
@@ -1500,19 +1592,19 @@ static int pderive_test_run(struct evp_test *t)
     struct pkey_data *kdata = t->data;
     unsigned char *out = NULL;
     size_t out_len;
-    const char *err = "INTERNAL_ERROR";
+    const char *err = "DERIVE_ERROR";
 
-    out_len = kdata->output_len;
+    if (EVP_PKEY_derive(kdata->ctx, NULL, &out_len) <= 0)
+        goto err;
     out = OPENSSL_malloc(out_len);
     if (!out) {
         fprintf(stderr, "Error allocating output buffer!\n");
         exit(1);
     }
-    err = "DERIVE_ERROR";
     if (EVP_PKEY_derive(kdata->ctx, out, &out_len) <= 0)
         goto err;
     err = "SHARED_SECRET_LENGTH_MISMATCH";
-    if (out_len != kdata->output_len)
+    if (kdata->output == NULL || out_len != kdata->output_len)
         goto err;
     err = "SHARED_SECRET_MISMATCH";
     if (check_output(t, kdata->output, out, out_len))
@@ -1950,3 +2042,131 @@ static const struct evp_test_method kdf_test_method = {
     kdf_test_parse,
     kdf_test_run
 };
+
+struct keypair_test_data {
+    EVP_PKEY *privk;
+    EVP_PKEY *pubk;
+};
+
+static int keypair_test_init(struct evp_test *t, const char *pair)
+{
+    int rv = 0;
+    EVP_PKEY *pk = NULL, *pubk = NULL;
+    char *pub, *priv = NULL;
+    const char *err = "INTERNAL_ERROR";
+    struct keypair_test_data *data;
+
+    priv = OPENSSL_strdup(pair);
+    if (priv == NULL)
+        return 0;
+    pub = strchr(priv, ':');
+    if ( pub == NULL ) {
+        fprintf(stderr, "Wrong syntax \"%s\"\n", pair);
+        goto end;
+    }
+    *pub++ = 0; /* split priv and pub strings */
+
+    if (find_key(&pk, priv, t->private) == 0) {
+        fprintf(stderr, "Cannot find private key: %s\n", priv);
+        err = "MISSING_PRIVATE_KEY";
+        goto end;
+    }
+    if (find_key(&pubk, pub, t->public) == 0) {
+        fprintf(stderr, "Cannot find public key: %s\n", pub);
+        err = "MISSING_PUBLIC_KEY";
+        goto end;
+    }
+
+    if (pk == NULL && pubk == NULL) {
+        /* Both keys are listed but unsupported: skip this test */
+        t->skip = 1;
+        rv = 1;
+        goto end;
+    }
+
+    data = OPENSSL_malloc(sizeof(*data));
+    if (data == NULL )
+        goto end;
+
+    data->privk = pk;
+    data->pubk = pubk;
+    t->data = data;
+
+    rv = 1;
+    err = NULL;
+
+end:
+    if (priv)
+        OPENSSL_free(priv);
+    t->err = err;
+    return rv;
+}
+
+static void keypair_test_cleanup(struct evp_test *t)
+{
+    struct keypair_test_data *data = t->data;
+    t->data = NULL;
+    if (data)
+        test_free(data);
+    return;
+}
+
+/* For test that do not accept any custom keyword:
+ *      return 0 if called
+ */
+static int void_test_parse(struct evp_test *t, const char *keyword, const char *value)
+{
+    return 0;
+}
+
+static int keypair_test_run(struct evp_test *t)
+{
+    int rv = 0;
+    const struct keypair_test_data *pair = t->data;
+    const char *err = "INTERNAL_ERROR";
+
+    if (pair == NULL)
+        goto end;
+
+    if (pair->privk == NULL || pair->pubk == NULL) {
+        /* this can only happen if only one of the keys is not set
+         * which means that one of them was unsupported while the
+         * other isn't: hence a key type mismatch.
+         */
+        err = "KEYPAIR_TYPE_MISMATCH";
+        rv = 1;
+        goto end;
+    }
+
+    if ((rv = EVP_PKEY_cmp(pair->privk, pair->pubk)) != 1 ) {
+        if ( 0 == rv ) {
+            err = "KEYPAIR_MISMATCH";
+        } else if ( -1 == rv ) {
+            err = "KEYPAIR_TYPE_MISMATCH";
+        } else if ( -2 == rv ) {
+            err = "UNSUPPORTED_KEY_COMPARISON";
+        } else {
+            fprintf(stderr, "Unexpected error in key comparison\n");
+            rv = 0;
+            goto end;
+        }
+        rv = 1;
+        goto end;
+    }
+
+    rv = 1;
+    err = NULL;
+
+end:
+    t->err = err;
+    return rv;
+}
+
+static const struct evp_test_method keypair_test_method = {
+    "PrivPubKeyPair",
+    keypair_test_init,
+    keypair_test_cleanup,
+    void_test_parse,
+    keypair_test_run
+};
+

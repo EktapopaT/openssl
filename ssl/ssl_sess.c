@@ -1,5 +1,5 @@
 /*
- * Copyright 1995-2016 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 1995-2018 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the OpenSSL license (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -138,6 +138,8 @@ SSL_SESSION *ssl_session_dup(SSL_SESSION *src, int ticket)
 #ifndef OPENSSL_NO_SRP
     dest->srp_username = NULL;
 #endif
+    dest->peer_chain = NULL;
+    dest->peer = NULL;
     memset(&dest->ex_data, 0, sizeof(dest->ex_data));
 
     /* We deliberately don't copy the prev and next pointers */
@@ -150,8 +152,14 @@ SSL_SESSION *ssl_session_dup(SSL_SESSION *src, int ticket)
     if (dest->lock == NULL)
         goto err;
 
-    if (src->peer != NULL)
-        X509_up_ref(src->peer);
+    if (!CRYPTO_new_ex_data(CRYPTO_EX_INDEX_SSL_SESSION, dest, &dest->ex_data))
+        goto err;
+
+    if (src->peer != NULL) {
+        if (!X509_up_ref(src->peer))
+            goto err;
+        dest->peer = src->peer;
+    }
 
     if (src->peer_chain != NULL) {
         dest->peer_chain = X509_chain_up_ref(src->peer_chain);
@@ -207,7 +215,7 @@ SSL_SESSION *ssl_session_dup(SSL_SESSION *src, int ticket)
     }
 #endif
 
-    if (ticket != 0) {
+    if (ticket != 0 && src->tlsext_tick != NULL) {
         dest->tlsext_tick =
             OPENSSL_memdup(src->tlsext_tick, src->tlsext_ticklen);
         if (dest->tlsext_tick == NULL)
@@ -407,7 +415,7 @@ int ssl_get_new_session(SSL *s, int session)
         ss->session_id_length = 0;
     }
 
-    if (s->sid_ctx_length > sizeof ss->sid_ctx) {
+    if (s->sid_ctx_length > sizeof(ss->sid_ctx)) {
         SSLerr(SSL_F_SSL_GET_NEW_SESSION, ERR_R_INTERNAL_ERROR);
         SSL_SESSION_free(ss);
         return 0;
@@ -523,11 +531,11 @@ int ssl_get_prev_session(SSL *s, const PACKET *ext, const PACKET *session_id)
                 (s->session_ctx->session_cache_mode &
                  SSL_SESS_CACHE_NO_INTERNAL_STORE)) {
                 /*
-                 * The following should not return 1, otherwise, things are
-                 * very strange
+                 * Either return value of SSL_CTX_add_session should not
+                 * interrupt the session resumption process. The return
+                 * value is intentionally ignored.
                  */
-                if (SSL_CTX_add_session(s->session_ctx, ret))
-                    goto err;
+                SSL_CTX_add_session(s->session_ctx, ret);
             }
         }
     }
@@ -660,6 +668,15 @@ int SSL_CTX_add_session(SSL_CTX *ctx, SSL_SESSION *c)
          * obtain the same session from an external cache)
          */
         s = NULL;
+    } else if (s == NULL &&
+               lh_SSL_SESSION_retrieve(ctx->sessions, c) == NULL) {
+        /* s == NULL can also mean OOM error in lh_SSL_SESSION_insert ... */
+
+        /*
+         * ... so take back the extra reference and also don't add
+         * the session to the SSL_SESSION_list at this time
+         */
+        s = c;
     }
 
     /* Put at the head of the queue unless it is already in the cache */
@@ -717,11 +734,11 @@ static int remove_session_lock(SSL_CTX *ctx, SSL_SESSION *c, int lck)
         if (lck)
             CRYPTO_THREAD_unlock(ctx->lock);
 
-        if (ret)
-            SSL_SESSION_free(r);
-
         if (ctx->remove_session_cb != NULL)
             ctx->remove_session_cb(ctx, c);
+
+        if (ret)
+            SSL_SESSION_free(r);
     } else
         ret = 0;
     return (ret);
@@ -742,8 +759,8 @@ void SSL_SESSION_free(SSL_SESSION *ss)
 
     CRYPTO_free_ex_data(CRYPTO_EX_INDEX_SSL_SESSION, ss, &ss->ex_data);
 
-    OPENSSL_cleanse(ss->master_key, sizeof ss->master_key);
-    OPENSSL_cleanse(ss->session_id, sizeof ss->session_id);
+    OPENSSL_cleanse(ss->master_key, sizeof(ss->master_key));
+    OPENSSL_cleanse(ss->session_id, sizeof(ss->session_id));
     X509_free(ss->peer);
     sk_X509_pop_free(ss->peer_chain, X509_free);
     sk_SSL_CIPHER_free(ss->ciphers);
@@ -805,7 +822,8 @@ int SSL_SESSION_set1_id(SSL_SESSION *s, const unsigned char *sid,
       return 0;
     }
     s->session_id_length = sid_len;
-    memcpy(s->session_id, sid, sid_len);
+    if (sid != s->session_id)
+        memcpy(s->session_id, sid, sid_len);
     return 1;
 }
 
@@ -886,7 +904,8 @@ int SSL_SESSION_set1_id_context(SSL_SESSION *s, const unsigned char *sid_ctx,
         return 0;
     }
     s->sid_ctx_length = sid_ctx_len;
-    memcpy(s->sid_ctx, sid_ctx, sid_ctx_len);
+    if (sid_ctx != s->sid_ctx)
+        memcpy(s->sid_ctx, sid_ctx, sid_ctx_len);
 
     return 1;
 }

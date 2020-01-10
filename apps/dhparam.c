@@ -1,5 +1,5 @@
 /*
- * Copyright 1995-2016 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 1995-2018 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the OpenSSL license (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -151,6 +151,11 @@ int dhparam_main(int argc, char **argv)
         goto end;
     }
 # endif
+
+    out = bio_open_default(outfile, 'w', outformat);
+    if (out == NULL)
+        goto end;
+
     /* DH parameters */
     if (num && !g)
         g = 2;
@@ -242,10 +247,19 @@ int dhparam_main(int argc, char **argv)
         } else
 # endif
         {
-            if (informat == FORMAT_ASN1)
+            if (informat == FORMAT_ASN1) {
+                /*
+                 * We have no PEM header to determine what type of DH params it
+                 * is. We'll just try both.
+                 */
                 dh = d2i_DHparams_bio(in, NULL);
-            else                /* informat == FORMAT_PEM */
+                /* BIO_reset() returns 0 for success for file BIOs only!!! */
+                if (dh == NULL && BIO_reset(in) == 0)
+                    dh = d2i_DHxparams_bio(in, NULL);
+            } else {
+                /* informat == FORMAT_PEM */
                 dh = PEM_read_bio_DHparams(in, NULL, NULL, NULL);
+            }
 
             if (dh == NULL) {
                 BIO_printf(bio_err, "unable to load DH parameters\n");
@@ -256,10 +270,6 @@ int dhparam_main(int argc, char **argv)
 
         /* dh != NULL */
     }
-
-    out = bio_open_default(outfile, 'w', outformat);
-    if (out == NULL)
-        goto end;
 
     if (text) {
         DHparams_print(out, dh);
@@ -317,9 +327,9 @@ int dhparam_main(int argc, char **argv)
                         "\n"
                         "    if (dh == NULL)\n"
                         "        return NULL;\n");
-        BIO_printf(out, "    dhp_bn = BN_bin2bn(dhp_%d, sizeof (dhp_%d), NULL);\n",
+        BIO_printf(out, "    dhp_bn = BN_bin2bn(dhp_%d, sizeof(dhp_%d), NULL);\n",
                    bits, bits);
-        BIO_printf(out, "    dhg_bn = BN_bin2bn(dhg_%d, sizeof (dhg_%d), NULL);\n",
+        BIO_printf(out, "    dhg_bn = BN_bin2bn(dhg_%d, sizeof(dhg_%d), NULL);\n",
                    bits, bits);
         BIO_printf(out, "    if (dhp_bn == NULL || dhg_bn == NULL\n"
                         "            || !DH_set0_pqg(dh, dhp_bn, NULL, dhg_bn)) {\n"
@@ -340,9 +350,12 @@ int dhparam_main(int argc, char **argv)
     if (!noout) {
         const BIGNUM *q;
         DH_get0_pqg(dh, NULL, &q, NULL);
-        if (outformat == FORMAT_ASN1)
-            i = i2d_DHparams_bio(out, dh);
-        else if (q != NULL)
+        if (outformat == FORMAT_ASN1) {
+            if (q != NULL)
+                i = i2d_DHxparams_bio(out, dh);
+            else
+                i = i2d_DHparams_bio(out, dh);
+        } else if (q != NULL)
             i = PEM_write_bio_DHxparams(out, dh);
         else
             i = PEM_write_bio_DHparams(out, dh);

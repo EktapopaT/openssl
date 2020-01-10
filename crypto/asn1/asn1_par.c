@@ -38,13 +38,13 @@ static int asn1_print_info(BIO *bp, int tag, int xclass, int constructed,
 
     p = str;
     if ((xclass & V_ASN1_PRIVATE) == V_ASN1_PRIVATE)
-        BIO_snprintf(str, sizeof str, "priv [ %d ] ", tag);
+        BIO_snprintf(str, sizeof(str), "priv [ %d ] ", tag);
     else if ((xclass & V_ASN1_CONTEXT_SPECIFIC) == V_ASN1_CONTEXT_SPECIFIC)
-        BIO_snprintf(str, sizeof str, "cont [ %d ]", tag);
+        BIO_snprintf(str, sizeof(str), "cont [ %d ]", tag);
     else if ((xclass & V_ASN1_APPLICATION) == V_ASN1_APPLICATION)
-        BIO_snprintf(str, sizeof str, "appl [ %d ]", tag);
+        BIO_snprintf(str, sizeof(str), "appl [ %d ]", tag);
     else if (tag > 30)
-        BIO_snprintf(str, sizeof str, "<ASN1 %d>", tag);
+        BIO_snprintf(str, sizeof(str), "<ASN1 %d>", tag);
     else
         p = ASN1_tag2str(tag);
 
@@ -79,8 +79,8 @@ static int asn1_parse2(BIO *bp, const unsigned char **pp, long length,
     int dump_indent, dump_cont = 0;
 
     if (depth > ASN1_PARSE_MAXDEPTH) {
-            BIO_puts(bp, "BAD RECURSION DEPTH\n");
-            return 0;
+        BIO_puts(bp, "BAD RECURSION DEPTH\n");
+        return 0;
     }
 
     dump_indent = 6;            /* Because we know BIO_dump_indent() */

@@ -1,5 +1,5 @@
 /*
- * Copyright 2012-2016 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2012-2018 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the OpenSSL license (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -415,13 +415,13 @@ static ssl_trace_tbl ssl_ciphers_tbl[] = {
     {0xC0AD, "TLS_ECDHE_ECDSA_WITH_AES_256_CCM"},
     {0xC0AE, "TLS_ECDHE_ECDSA_WITH_AES_128_CCM_8"},
     {0xC0AF, "TLS_ECDHE_ECDSA_WITH_AES_256_CCM_8"},
-    {0xCCA8, "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305"},
-    {0xCCA9, "TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305"},
-    {0xCCAA, "TLS_DHE_RSA_WITH_CHACHA20_POLY1305"},
-    {0xCCAB, "TLS_PSK_WITH_CHACHA20_POLY1305"},
-    {0xCCAC, "TLS_ECDHE_PSK_WITH_CHACHA20_POLY1305"},
-    {0xCCAD, "TLS_DHE_PSK_WITH_CHACHA20_POLY1305"},
-    {0xCCAE, "TLS_RSA_PSK_WITH_CHACHA20_POLY1305"},
+    {0xCCA8, "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256"},
+    {0xCCA9, "TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256"},
+    {0xCCAA, "TLS_DHE_RSA_WITH_CHACHA20_POLY1305_SHA256"},
+    {0xCCAB, "TLS_PSK_WITH_CHACHA20_POLY1305_SHA256"},
+    {0xCCAC, "TLS_ECDHE_PSK_WITH_CHACHA20_POLY1305_SHA256"},
+    {0xCCAD, "TLS_DHE_PSK_WITH_CHACHA20_POLY1305_SHA256"},
+    {0xCCAE, "TLS_RSA_PSK_WITH_CHACHA20_POLY1305_SHA256"},
     {0xFEFE, "SSL_RSA_FIPS_WITH_DES_CBC_SHA"},
     {0xFEFF, "SSL_RSA_FIPS_WITH_3DES_EDE_CBC_SHA"},
 };
@@ -545,21 +545,6 @@ static ssl_trace_tbl ssl_ctype_tbl[] = {
     {64, "ecdsa_sign"},
     {65, "rsa_fixed_ecdh"},
     {66, "ecdsa_fixed_ecdh"}
-};
-
-static ssl_trace_tbl ssl_crypto_tbl[] = {
-    {TLS1_RT_CRYPTO_PREMASTER, "Premaster Secret"},
-    {TLS1_RT_CRYPTO_CLIENT_RANDOM, "Client Random"},
-    {TLS1_RT_CRYPTO_SERVER_RANDOM, "Server Random"},
-    {TLS1_RT_CRYPTO_MASTER, "Master Secret"},
-    {TLS1_RT_CRYPTO_MAC | TLS1_RT_CRYPTO_WRITE, "Write Mac Secret"},
-    {TLS1_RT_CRYPTO_MAC | TLS1_RT_CRYPTO_READ, "Read Mac Secret"},
-    {TLS1_RT_CRYPTO_KEY | TLS1_RT_CRYPTO_WRITE, "Write Key"},
-    {TLS1_RT_CRYPTO_KEY | TLS1_RT_CRYPTO_READ, "Read Key"},
-    {TLS1_RT_CRYPTO_IV | TLS1_RT_CRYPTO_WRITE, "Write IV"},
-    {TLS1_RT_CRYPTO_IV | TLS1_RT_CRYPTO_READ, "Read IV"},
-    {TLS1_RT_CRYPTO_FIXED_IV | TLS1_RT_CRYPTO_WRITE, "Write IV (fixed part)"},
-    {TLS1_RT_CRYPTO_FIXED_IV | TLS1_RT_CRYPTO_READ, "Read IV (fixed part)"}
 };
 
 static void ssl_print_hex(BIO *bio, int indent, const char *name,
@@ -740,6 +725,8 @@ static int ssl_print_extensions(BIO *bio, int indent, int server,
         BIO_puts(bio, "No Extensions\n");
         return 1;
     }
+    if (msglen < 2)
+        return 0;
     extslen = (msg[0] << 8) | msg[1];
     if (extslen != msglen - 2)
         return 0;
@@ -1107,6 +1094,8 @@ static int ssl_print_cert_request(BIO *bio, int indent, SSL *s,
     msglen -= xlen + 2;
 
  skip_sig:
+    if (msglen < 2)
+        return 0;
     xlen = (msg[0] << 8) | msg[1];
     BIO_indent(bio, indent, 80);
     if (msglen < xlen + 2)
@@ -1283,16 +1272,19 @@ void SSL_trace(int write_p, int version, int content_type,
     const unsigned char *msg = buf;
     BIO *bio = arg;
 
-    if (write_p == 2) {
-        BIO_puts(bio, "Session ");
-        ssl_print_hex(bio, 0,
-                      ssl_trace_str(content_type, ssl_crypto_tbl), msg, msglen);
-        return;
-    }
     switch (content_type) {
     case SSL3_RT_HEADER:
         {
-            int hvers = msg[1] << 8 | msg[2];
+            int hvers;
+
+            /* avoid overlapping with length at the end of buffer */
+            if (msglen < (size_t)(SSL_IS_DTLS(ssl) ?
+                         DTLS1_RT_HEADER_LENGTH : SSL3_RT_HEADER_LENGTH)) {
+                BIO_puts(bio, write_p ? "Sent" : "Received");
+                ssl_print_hex(bio, 0, " too short message", msg, msglen);
+                break;
+            }
+            hvers = msg[1] << 8 | msg[2];
             BIO_puts(bio, write_p ? "Sent" : "Received");
             BIO_printf(bio, " Record\nHeader:\n  Version = %s (0x%x)\n",
                        ssl_trace_str(hvers, ssl_version_tbl), hvers);
@@ -1322,13 +1314,15 @@ void SSL_trace(int write_p, int version, int content_type,
         break;
 
     case SSL3_RT_ALERT:
-        if (msglen != 2)
+        if (msglen != 2) {
             BIO_puts(bio, "    Illegal Alert Length\n");
-        else {
+        } else {
             BIO_printf(bio, "    Level=%s(%d), description=%s(%d)\n",
                        SSL_alert_type_string_long(msg[0] << 8),
                        msg[0], SSL_alert_desc_string_long(msg[1]), msg[1]);
         }
+        break;
+
     case DTLS1_RT_HEARTBEAT:
         ssl_print_heartbeat(bio, 4, msg, msglen);
         break;

@@ -1,5 +1,5 @@
 /*
- * Copyright 2015-2016 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2015-2019 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the OpenSSL license (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -29,6 +29,8 @@ typedef struct {
 } EVP_CHACHA_KEY;
 
 #define data(ctx)   ((EVP_CHACHA_KEY *)(ctx)->cipher_data)
+
+#define CHACHA20_POLY1305_MAX_IVLEN     12
 
 static int chacha_init_key(EVP_CIPHER_CTX *ctx,
                            const unsigned char user_key[CHACHA_KEY_SIZE],
@@ -127,7 +129,7 @@ static const EVP_CIPHER chacha20 = {
     1,                      /* block_size */
     CHACHA_KEY_SIZE,        /* key_len */
     CHACHA_CTR_SIZE,        /* iv_len, 128-bit counter in the context */
-    0,                      /* flags */
+    EVP_CIPH_CUSTOM_IV | EVP_CIPH_ALWAYS_CALL_INIT,
     chacha_init_key,
     chacha_cipher,
     NULL,
@@ -316,7 +318,7 @@ static int chacha20_poly1305_cleanup(EVP_CIPHER_CTX *ctx)
 {
     EVP_CHACHA_AEAD_CTX *actx = aead_data(ctx);
     if (actx)
-        OPENSSL_cleanse(ctx->cipher_data, sizeof(*ctx) + Poly1305_ctx_size());
+        OPENSSL_cleanse(ctx->cipher_data, sizeof(*actx) + Poly1305_ctx_size());
     return 1;
 }
 
@@ -357,7 +359,7 @@ static int chacha20_poly1305_ctrl(EVP_CIPHER_CTX *ctx, int type, int arg,
         return 1;
 
     case EVP_CTRL_AEAD_SET_IVLEN:
-        if (arg <= 0 || arg > CHACHA_CTR_SIZE)
+        if (arg <= 0 || arg > CHACHA20_POLY1305_MAX_IVLEN)
             return 0;
         actx->nonce_len = arg;
         return 1;
@@ -398,6 +400,8 @@ static int chacha20_poly1305_ctrl(EVP_CIPHER_CTX *ctx, int type, int arg,
             len = aad[EVP_AEAD_TLS1_AAD_LEN - 2] << 8 |
                   aad[EVP_AEAD_TLS1_AAD_LEN - 1];
             if (!ctx->encrypt) {
+                if (len < POLY1305_BLOCK_SIZE)
+                    return 0;
                 len -= POLY1305_BLOCK_SIZE;     /* discount attached tag */
                 memcpy(temp, aad, EVP_AEAD_TLS1_AAD_LEN - 2);
                 aad = temp;
@@ -407,8 +411,7 @@ static int chacha20_poly1305_ctrl(EVP_CIPHER_CTX *ctx, int type, int arg,
             actx->tls_payload_length = len;
 
             /*
-             * merge record sequence number as per
-             * draft-ietf-tls-chacha20-poly1305-03
+             * merge record sequence number as per RFC7905
              */
             actx->key.counter[1] = actx->nonce[0];
             actx->key.counter[2] = actx->nonce[1] ^ CHACHA_U8TOU32(aad);

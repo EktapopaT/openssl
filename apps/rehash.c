@@ -1,5 +1,5 @@
 /*
- * Copyright 2015-2016 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2015-2018 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the OpenSSL license (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -16,7 +16,7 @@
 #include "apps.h"
 
 #if defined(OPENSSL_SYS_UNIX) || defined(__APPLE__) || \
-    (defined(__VMS) && defined(__DECC) && __CTRL_VER >= 80300000)
+    (defined(__VMS) && defined(__DECC) && __CRTL_VER >= 80300000)
 # include <unistd.h>
 # include <stdio.h>
 # include <limits.h>
@@ -25,7 +25,23 @@
 # include <ctype.h>
 # include <sys/stat.h>
 
+/*
+ * Make sure that the processing of symbol names is treated the same as when
+ * libcrypto is built.  This is done automatically for public headers (see
+ * include/openssl/__DECC_INCLUDE_PROLOGUE.H and __DECC_INCLUDE_EPILOGUE.H),
+ * but not for internal headers.
+ */
+# ifdef __VMS
+#  pragma names save
+#  pragma names as_is,shortened
+# endif
+
 # include "internal/o_dir.h"
+
+# ifdef __VMS
+#  pragma names restore
+# endif
+
 # include <openssl/evp.h>
 # include <openssl/pem.h>
 # include <openssl/x509.h>
@@ -114,9 +130,10 @@ static int add_entry(enum Type type, unsigned int hash, const char *filename,
     for (ep = bp->first_entry; ep; ep = ep->next) {
         if (digest && memcmp(digest, ep->digest, evpmdsize) == 0) {
             BIO_printf(bio_err,
-                       "%s: skipping duplicate %s in %s\n", opt_getprog(),
+                       "%s: warning: skipping duplicate %s in %s\n",
+                       opt_getprog(),
                        type == TYPE_CERT ? "certificate" : "CRL", filename);
-            return 1;
+            return 0;
         }
         if (strcmp(filename, ep->filename) == 0) {
             found = ep;
@@ -128,7 +145,7 @@ static int add_entry(enum Type type, unsigned int hash, const char *filename,
     if (ep == NULL) {
         if (bp->num_needed >= MAX_COLLISIONS) {
             BIO_printf(bio_err,
-                       "%s: hash table overflow for %s\n",
+                       "%s: error: hash table overflow for %s\n",
                        opt_getprog(), filename);
             return 1;
         }
@@ -219,7 +236,7 @@ static int do_file(const char *filename, const char *fullpath, enum Hash h)
 
     /* Does it have X.509 data in it? */
     if ((b = BIO_new_file(fullpath, "r")) == NULL) {
-        BIO_printf(bio_err, "%s: skipping %s, cannot open file\n",
+        BIO_printf(bio_err, "%s: error: skipping %s, cannot open file\n",
                    opt_getprog(), filename);
         errs++;
         goto end;
@@ -231,7 +248,7 @@ static int do_file(const char *filename, const char *fullpath, enum Hash h)
 
     if (sk_X509_INFO_num(inf) != 1) {
         BIO_printf(bio_err,
-                   "%s: skipping %s,"
+                   "%s: warning: skipping %s,"
                    "it does not contain exactly one certificate or CRL\n",
                    opt_getprog(), filename);
         /* This is not an error. */
@@ -267,6 +284,38 @@ static void str_free(char *s)
     OPENSSL_free(s);
 }
 
+static int ends_with_dirsep(const char *path)
+{
+    if (*path != '\0')
+        path += strlen(path) - 1;
+# if defined __VMS
+    if (*path == ']' || *path == '>' || *path == ':')
+        return 1;
+# elif defined _WIN32
+    if (*path == '\\')
+        return 1;
+# endif
+    return *path == '/';
+}
+
+static int massage_filename(char *name)
+{
+# ifdef __VMS
+    char *p = strchr(name, ';');
+    char *q = p;
+
+    if (q != NULL) {
+        for (q++; *q != '\0'; q++) {
+            if (!isdigit((unsigned char)*q))
+                return 1;
+        }
+    }
+
+    *p = '\0';
+# endif
+    return 1;
+}
+
 /*
  * Process a directory; return number of errors found.
  */
@@ -289,7 +338,7 @@ static int do_dir(const char *dirname, enum Hash h)
         return 1;
     }
     buflen = strlen(dirname);
-    pathsep = (buflen && dirname[buflen - 1] == '/') ? "" : "/";
+    pathsep = (buflen && !ends_with_dirsep(dirname)) ? "/": "";
     buflen += NAME_MAX + 1 + 1;
     buf = app_malloc(buflen, "filename buffer");
 
@@ -302,6 +351,7 @@ static int do_dir(const char *dirname, enum Hash h)
     }
     while ((filename = OPENSSL_DIR_read(&d, dirname)) != NULL) {
         if ((copy = strdup(filename)) == NULL
+                || !massage_filename(copy)
                 || sk_OPENSSL_STRING_push(files, copy) == 0) {
             BIO_puts(bio_err, "out of memory\n");
             exit(1);
@@ -313,8 +363,8 @@ static int do_dir(const char *dirname, enum Hash h)
     numfiles = sk_OPENSSL_STRING_num(files);
     for (n = 0; n < numfiles; ++n) {
         filename = sk_OPENSSL_STRING_value(files, n);
-        if (snprintf(buf, buflen, "%s%s%s",
-                    dirname, pathsep, filename) >= buflen)
+        if (BIO_snprintf(buf, buflen, "%s%s%s",
+                         dirname, pathsep, filename) >= buflen)
             continue;
         if (lstat(buf, &st) < 0)
             continue;
@@ -337,8 +387,8 @@ static int do_dir(const char *dirname, enum Hash h)
                 nextep = ep->next;
                 if (ep->old_id < bp->num_needed) {
                     /* Link exists, and is used as-is */
-                    snprintf(buf, buflen, "%08x.%s%d", bp->hash,
-                             suffixes[bp->type], ep->old_id);
+                    BIO_snprintf(buf, buflen, "%08x.%s%d", bp->hash,
+                                 suffixes[bp->type], ep->old_id);
                     if (verbose)
                         BIO_printf(bio_out, "link %s -> %s\n",
                                    ep->filename, buf);
@@ -347,9 +397,9 @@ static int do_dir(const char *dirname, enum Hash h)
                     while (bit_isset(idmask, nextid))
                         nextid++;
 
-                    snprintf(buf, buflen, "%s%s%n%08x.%s%d",
-                             dirname, pathsep, &n, bp->hash,
-                             suffixes[bp->type], nextid);
+                    BIO_snprintf(buf, buflen, "%s%s%n%08x.%s%d",
+                                 dirname, pathsep, &n, bp->hash,
+                                 suffixes[bp->type], nextid);
                     if (verbose)
                         BIO_printf(bio_out, "link %s -> %s\n",
                                    ep->filename, &buf[n]);
@@ -369,9 +419,9 @@ static int do_dir(const char *dirname, enum Hash h)
                     bit_set(idmask, nextid);
                 } else if (remove_links) {
                     /* Link to be deleted */
-                    snprintf(buf, buflen, "%s%s%n%08x.%s%d",
-                             dirname, pathsep, &n, bp->hash,
-                             suffixes[bp->type], ep->old_id);
+                    BIO_snprintf(buf, buflen, "%s%s%n%08x.%s%d",
+                                 dirname, pathsep, &n, bp->hash,
+                                 suffixes[bp->type], ep->old_id);
                     if (verbose)
                         BIO_printf(bio_out, "unlink %s\n",
                                    &buf[n]);
@@ -453,13 +503,14 @@ int rehash_main(int argc, char **argv)
     if (*argv) {
         while (*argv)
             errs += do_dir(*argv++, h);
-    } else if ((env = getenv("SSL_CERT_DIR")) != NULL) {
+    } else if ((env = getenv(X509_get_default_cert_dir_env())) != NULL) {
+        char lsc[2] = { LIST_SEPARATOR_CHAR, '\0' };
         m = OPENSSL_strdup(env);
-        for (e = strtok(m, ":"); e != NULL; e = strtok(NULL, ":"))
+        for (e = strtok(m, lsc); e != NULL; e = strtok(NULL, lsc))
             errs += do_dir(e, h);
         OPENSSL_free(m);
     } else {
-        errs += do_dir("/etc/ssl/certs", h);
+        errs += do_dir(X509_get_default_cert_dir(), h);
     }
 
  end:

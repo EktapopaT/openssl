@@ -1,5 +1,5 @@
 /*
- * Copyright 2006-2016 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2006-2019 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the OpenSSL license (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -48,7 +48,7 @@ static int pkey_rsa_init(EVP_PKEY_CTX *ctx)
     rctx = OPENSSL_zalloc(sizeof(*rctx));
     if (rctx == NULL)
         return 0;
-    rctx->nbits = 1024;
+    rctx->nbits = 2048;
     rctx->pad_mode = RSA_PKCS1_PADDING;
     rctx->saltlen = -2;
     ctx->data = rctx;
@@ -302,19 +302,14 @@ static int pkey_rsa_decrypt(EVP_PKEY_CTX *ctx,
     int ret;
     RSA_PKEY_CTX *rctx = ctx->data;
     if (rctx->pad_mode == RSA_PKCS1_OAEP_PADDING) {
-        int i;
         if (!setup_tbuf(rctx, ctx))
             return -1;
         ret = RSA_private_decrypt(inlen, in, rctx->tbuf,
                                   ctx->pkey->pkey.rsa, RSA_NO_PADDING);
         if (ret <= 0)
             return ret;
-        for (i = 0; i < ret; i++) {
-            if (rctx->tbuf[i])
-                break;
-        }
-        ret = RSA_padding_check_PKCS1_OAEP_mgf1(out, ret, rctx->tbuf + i,
-                                                ret - i, ret,
+        ret = RSA_padding_check_PKCS1_OAEP_mgf1(out, ret, rctx->tbuf,
+                                                ret, ret,
                                                 rctx->oaep_label,
                                                 rctx->oaep_labellen,
                                                 rctx->md, rctx->mgf1md);

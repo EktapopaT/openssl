@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2016-2018 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the OpenSSL license (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -297,7 +297,7 @@ static int server_alpn_cb(SSL *s, const unsigned char **out,
     *out = tmp_out;
     /* Unlike NPN, we don't tolerate a mismatch. */
     return ret == OPENSSL_NPN_NEGOTIATED ? SSL_TLSEXT_ERR_OK
-        : SSL_TLSEXT_ERR_NOACK;
+        : SSL_TLSEXT_ERR_ALERT_FATAL;
 }
 
 /*
@@ -505,7 +505,11 @@ static void do_handshake_step(PEER *peer)
 {
     int ret;
 
-    TEST_check(peer->status == PEER_RETRY);
+    if (peer->status != PEER_RETRY) {
+        peer->status = PEER_ERROR;
+        return;
+    }
+
     ret = SSL_do_handshake(peer->ssl);
 
     if (ret == 1) {
@@ -588,6 +592,17 @@ static void do_reneg_setup_step(const SSL_TEST_CTX *test_ctx, PEER *peer)
     int ret;
     char buf;
 
+    if (peer->status == PEER_SUCCESS) {
+        /*
+         * We are a client that succeeded this step previously, but the server
+         * wanted to retry. Probably there is a no_renegotiation warning alert
+         * waiting for us. Attempt to continue the handshake.
+         */
+        peer->status = PEER_RETRY;
+        do_handshake_step(peer);
+        return;
+    }
+
     TEST_check(peer->status == PEER_RETRY);
     TEST_check(test_ctx->handshake_mode == SSL_TEST_HANDSHAKE_RENEG_SERVER
                 || test_ctx->handshake_mode == SSL_TEST_HANDSHAKE_RENEG_CLIENT);
@@ -607,10 +622,20 @@ static void do_reneg_setup_step(const SSL_TEST_CTX *test_ctx, PEER *peer)
              * session. The server may or may not resume dependant on the
              * setting of SSL_OP_NO_SESSION_RESUMPTION_ON_RENEGOTIATION
              */
-            if (SSL_is_server(peer->ssl))
+            if (SSL_is_server(peer->ssl)) {
                 ret = SSL_renegotiate(peer->ssl);
-            else
-                ret = SSL_renegotiate_abbreviated(peer->ssl);
+            } else {
+                if (test_ctx->extra.client.reneg_ciphers != NULL) {
+                    if (!SSL_set_cipher_list(peer->ssl,
+                                test_ctx->extra.client.reneg_ciphers)) {
+                        peer->status = PEER_ERROR;
+                        return;
+                    }
+                    ret = SSL_renegotiate(peer->ssl);
+                } else {
+                    ret = SSL_renegotiate_abbreviated(peer->ssl);
+                }
+            }
             if (!ret) {
                 peer->status = PEER_ERROR;
                 return;
@@ -794,18 +819,11 @@ static handshake_status_t handshake_status(peer_status_t last_status,
              */
             return INTERNAL_ERROR;
         }
+        break;
 
     case PEER_RETRY:
-        if (previous_status == PEER_RETRY) {
-            /* Neither peer is done. */
-            return HANDSHAKE_RETRY;
-        } else {
-            /*
-             * Deadlock: second peer is waiting for more input while first
-             * peer thinks they're done (no more input is coming).
-             */
-            return INTERNAL_ERROR;
-        }
+        return HANDSHAKE_RETRY;
+
     case PEER_ERROR:
         switch (previous_status) {
         case PEER_SUCCESS:
@@ -876,6 +894,7 @@ static HANDSHAKE_RESULT *do_handshake_internal(
     const unsigned char *proto = NULL;
     /* API dictates unsigned int rather than size_t. */
     unsigned int proto_len = 0;
+    EVP_PKEY *tmp_key;
 
     memset(&server_ctx_data, 0, sizeof(server_ctx_data));
     memset(&server2_ctx_data, 0, sizeof(server2_ctx_data));
@@ -1034,6 +1053,19 @@ static HANDSHAKE_RESULT *do_handshake_internal(
 
     if (session_out != NULL)
         *session_out = SSL_get1_session(client.ssl);
+
+    if (SSL_get_server_tmp_key(client.ssl, &tmp_key)) {
+        int nid = EVP_PKEY_id(tmp_key);
+
+#ifndef OPENSSL_NO_EC
+        if (nid == EVP_PKEY_EC) {
+            EC_KEY *ec = EVP_PKEY_get0_EC_KEY(tmp_key);
+            nid = EC_GROUP_get_curve_name(EC_KEY_get0_group(ec));
+        }
+#endif
+        EVP_PKEY_free(tmp_key);
+        ret->tmp_key_type = nid;
+    }
 
     ctx_data_free_data(&server_ctx_data);
     ctx_data_free_data(&server2_ctx_data);

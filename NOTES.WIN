@@ -9,7 +9,8 @@
  this are required as well:
 
  - You need Perl.  We recommend ActiveState Perl, available from
-   https://www.activestate.com/ActivePerl.
+   https://www.activestate.com/ActivePerl. Another viable alternative
+   appears to be Strawberry Perl, http://strawberryperl.com.
    You also need the perl module Text::Template, available on CPAN.
    Please read NOTES.PERL for more information.
 
@@ -105,6 +106,21 @@
    Other possible cross compile prefixes include x86_64-w64-mingw32-
    and i686-w64-mingw32-.
 
+
+ Independently of the method chosen to build for mingw, the installation
+ paths are similar to those used when building with VC-* targets, except
+ that in case the fallbacks mentioned there aren't possible (typically
+ when cross compiling on Linux), the paths will be the following:
+
+ For mingw:
+
+     PREFIX:      C:/Program Files (x86)/OpenSSL
+     OPENSSLDIR   C:/Program Files (x86)/Common Files/SSL
+
+ For mingw64:
+
+     PREFIX:      C:/Program Files/OpenSSL
+     OPENSSLDIR   C:/Program Files/Common Files/SSL
 
  Linking your application
  ------------------------

@@ -1,5 +1,5 @@
 /*
- * Copyright 2005-2016 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2005-2018 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the OpenSSL license (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -76,7 +76,11 @@ int RSA_verify_PKCS1_PSS_mgf1(RSA *rsa, const unsigned char *mHash,
         EM++;
         emLen--;
     }
-    if (emLen < (hLen + sLen + 2)) { /* sLen can be small negative */
+    if (emLen < hLen + 2) {
+        RSAerr(RSA_F_RSA_VERIFY_PKCS1_PSS_MGF1, RSA_R_DATA_TOO_LARGE);
+        goto err;
+    }
+    if (sLen > emLen - hLen - 2) { /* sLen can be small negative */
         RSAerr(RSA_F_RSA_VERIFY_PKCS1_PSS_MGF1, RSA_R_DATA_TOO_LARGE);
         goto err;
     }
@@ -107,7 +111,7 @@ int RSA_verify_PKCS1_PSS_mgf1(RSA *rsa, const unsigned char *mHash,
         goto err;
     }
     if (!EVP_DigestInit_ex(ctx, Hash, NULL)
-        || !EVP_DigestUpdate(ctx, zeroes, sizeof zeroes)
+        || !EVP_DigestUpdate(ctx, zeroes, sizeof(zeroes))
         || !EVP_DigestUpdate(ctx, mHash, hLen))
         goto err;
     if (maskedDBLen - i) {
@@ -175,9 +179,14 @@ int RSA_padding_add_PKCS1_PSS_mgf1(RSA *rsa, unsigned char *EM,
         *EM++ = 0;
         emLen--;
     }
+    if (emLen < hLen + 2) {
+        RSAerr(RSA_F_RSA_PADDING_ADD_PKCS1_PSS_MGF1,
+               RSA_R_DATA_TOO_LARGE_FOR_KEY_SIZE);
+        goto err;
+    }
     if (sLen == -2) {
         sLen = emLen - hLen - 2;
-    } else if (emLen < (hLen + sLen + 2)) {
+    } else if (sLen > emLen - hLen - 2) {
         RSAerr(RSA_F_RSA_PADDING_ADD_PKCS1_PSS_MGF1,
                RSA_R_DATA_TOO_LARGE_FOR_KEY_SIZE);
         goto err;
@@ -198,7 +207,7 @@ int RSA_padding_add_PKCS1_PSS_mgf1(RSA *rsa, unsigned char *EM,
     if (ctx == NULL)
         goto err;
     if (!EVP_DigestInit_ex(ctx, Hash, NULL)
-        || !EVP_DigestUpdate(ctx, zeroes, sizeof zeroes)
+        || !EVP_DigestUpdate(ctx, zeroes, sizeof(zeroes))
         || !EVP_DigestUpdate(ctx, mHash, hLen))
         goto err;
     if (sLen && !EVP_DigestUpdate(ctx, salt, sLen))
@@ -233,7 +242,7 @@ int RSA_padding_add_PKCS1_PSS_mgf1(RSA *rsa, unsigned char *EM,
 
  err:
     EVP_MD_CTX_free(ctx);
-    OPENSSL_free(salt);
+    OPENSSL_clear_free(salt, sLen);
 
     return ret;
 

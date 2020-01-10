@@ -102,7 +102,7 @@ int RAND_query_egd_bytes(const char *path, unsigned char *buf, int bytes)
     addr.sun_family = AF_UNIX;
     if (strlen(path) >= sizeof(addr.sun_path))
         return (-1);
-    OPENSSL_strlcpy(addr.sun_path, path, sizeof addr.sun_path);
+    OPENSSL_strlcpy(addr.sun_path, path, sizeof(addr.sun_path));
     len = offsetof(struct sockaddr_un, sun_path) + strlen(path);
     fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (fd == -1)
@@ -133,6 +133,7 @@ int RAND_query_egd_bytes(const char *path, unsigned char *buf, int bytes)
                 break;
 #  endif
             default:
+                ret = -1;
                 goto err;       /* failure */
             }
         }
@@ -227,10 +228,10 @@ int RAND_query_egd_bytes(const char *path, unsigned char *buf, int bytes)
 
 int RAND_egd_bytes(const char *path, int bytes)
 {
-    int num, ret = 0;
+    int num, ret = -1;
 
     num = RAND_query_egd_bytes(path, NULL, bytes);
-    if (num < 1)
+    if (num < 0)
         goto err;
     if (RAND_status() == 1)
         ret = num;

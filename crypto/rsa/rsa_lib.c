@@ -1,5 +1,5 @@
 /*
- * Copyright 1995-2016 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 1995-2019 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the OpenSSL license (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -15,31 +15,9 @@
 #include <openssl/engine.h>
 #include "rsa_locl.h"
 
-static const RSA_METHOD *default_RSA_meth = NULL;
-
 RSA *RSA_new(void)
 {
-    RSA *r = RSA_new_method(NULL);
-
-    return r;
-}
-
-void RSA_set_default_method(const RSA_METHOD *meth)
-{
-    default_RSA_meth = meth;
-}
-
-const RSA_METHOD *RSA_get_default_method(void)
-{
-    if (default_RSA_meth == NULL) {
-#ifdef RSA_NULL
-        default_RSA_meth = RSA_null_method();
-#else
-        default_RSA_meth = RSA_PKCS1_OpenSSL();
-#endif
-    }
-
-    return default_RSA_meth;
+    return RSA_new_method(NULL);
 }
 
 const RSA_METHOD *RSA_get_method(const RSA *rsa)
@@ -116,7 +94,7 @@ RSA *RSA_new_method(ENGINE *engine)
 
     return ret;
 
-err:
+ err:
     RSA_free(ret);
     return NULL;
 }
@@ -134,7 +112,7 @@ void RSA_free(RSA *r)
         return;
     REF_ASSERT_ISNT(i < 0);
 
-    if (r->meth->finish)
+    if (r->meth != NULL && r->meth->finish != NULL)
         r->meth->finish(r);
 #ifndef OPENSSL_NO_ENGINE
     ENGINE_finish(r->engine);
@@ -206,6 +184,7 @@ int RSA_set0_key(RSA *r, BIGNUM *n, BIGNUM *e, BIGNUM *d)
     if (d != NULL) {
         BN_free(r->d);
         r->d = d;
+        BN_set_flags(r->d, BN_FLG_CONSTTIME);
     }
 
     return 1;
@@ -223,10 +202,12 @@ int RSA_set0_factors(RSA *r, BIGNUM *p, BIGNUM *q)
     if (p != NULL) {
         BN_free(r->p);
         r->p = p;
+        BN_set_flags(r->p, BN_FLG_CONSTTIME);
     }
     if (q != NULL) {
         BN_free(r->q);
         r->q = q;
+        BN_set_flags(r->q, BN_FLG_CONSTTIME);
     }
 
     return 1;
@@ -245,14 +226,17 @@ int RSA_set0_crt_params(RSA *r, BIGNUM *dmp1, BIGNUM *dmq1, BIGNUM *iqmp)
     if (dmp1 != NULL) {
         BN_free(r->dmp1);
         r->dmp1 = dmp1;
+        BN_set_flags(r->dmp1, BN_FLG_CONSTTIME);
     }
     if (dmq1 != NULL) {
         BN_free(r->dmq1);
         r->dmq1 = dmq1;
+        BN_set_flags(r->dmq1, BN_FLG_CONSTTIME);
     }
     if (iqmp != NULL) {
         BN_free(r->iqmp);
         r->iqmp = iqmp;
+        BN_set_flags(r->iqmp, BN_FLG_CONSTTIME);
     }
 
     return 1;

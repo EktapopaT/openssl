@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2016-2018 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the OpenSSL license (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -17,30 +17,6 @@
 #include <openssl/buffer.h>
 #include <internal/thread_once.h>
 #include <ctype.h>
-
-#ifdef _HPUX_SOURCE
-static const char *ossl_hstrerror(int herr)
-{
-    switch (herr) {
-    case -1:
-        return strerror(errno);
-    case 0:
-        return "No error";
-    case HOST_NOT_FOUND:
-        return "Host not found";
-    case NO_DATA:                /* NO_ADDRESS is a synonym */
-        return "No data";
-    case NO_RECOVERY:
-        return "Non recoverable error";
-    case TRY_AGAIN:
-        return "Try again";
-    default:
-        break;
-    }
-    return "unknown error";
-}
-# define hstrerror(e) ossl_hstrerror(e)
-#endif
 
 CRYPTO_RWLOCK *bio_lookup_lock;
 static CRYPTO_ONCE bio_lookup_init = CRYPTO_ONCE_STATIC_INIT;
@@ -90,18 +66,18 @@ void BIO_ADDR_clear(BIO_ADDR *ap)
 int BIO_ADDR_make(BIO_ADDR *ap, const struct sockaddr *sa)
 {
     if (sa->sa_family == AF_INET) {
-        ap->s_in = *(const struct sockaddr_in *)sa;
+        memcpy(&(ap->s_in), sa, sizeof(struct sockaddr_in));
         return 1;
     }
 #ifdef AF_INET6
     if (sa->sa_family == AF_INET6) {
-        ap->s_in6 = *(const struct sockaddr_in6 *)sa;
+        memcpy(&(ap->s_in6), sa, sizeof(struct sockaddr_in6));
         return 1;
     }
 #endif
 #ifdef AF_UNIX
-    if (ap->sa.sa_family == AF_UNIX) {
-        ap->s_un = *(const struct sockaddr_un *)sa;
+    if (sa->sa_family == AF_UNIX) {
+        memcpy(&(ap->s_un), sa, sizeof(struct sockaddr_un));
         return 1;
     }
 #endif
@@ -628,7 +604,8 @@ static int addrinfo_wrap(int family, int socktype,
 
 DEFINE_RUN_ONCE_STATIC(do_bio_lookup_init)
 {
-    OPENSSL_init_crypto(0, NULL);
+    if (!OPENSSL_init_crypto(0, NULL))
+        return 0;
     bio_lookup_lock = CRYPTO_THREAD_lock_new();
     return bio_lookup_lock != NULL;
 }
@@ -688,10 +665,11 @@ int BIO_lookup(const char *host, const char *service,
         return 0;
 
     if (1) {
-        int gai_ret = 0;
 #ifdef AI_PASSIVE
+        int gai_ret = 0;
         struct addrinfo hints;
-        memset(&hints, 0, sizeof hints);
+
+        memset(&hints, 0, sizeof(hints));
 
         hints.ai_family = family;
         hints.ai_socktype = socktype;
@@ -780,8 +758,18 @@ int BIO_lookup(const char *host, const char *service,
 
             if (he == NULL) {
 #ifndef OPENSSL_SYS_WINDOWS
-                BIOerr(BIO_F_BIO_LOOKUP, ERR_R_SYS_LIB);
-                ERR_add_error_data(1, hstrerror(h_errno));
+                /*
+                 * This might be misleading, because h_errno is used as if
+                 * it was errno. To minimize mixup add 1000. Underlying
+                 * reason for this is that hstrerror is declared obsolete,
+                 * not to mention that a) h_errno is not always guaranteed
+                 * to be meaningless; b) hstrerror can reside in yet another
+                 * library, linking for sake of hstrerror is an overkill;
+                 * c) this path is not executed on contemporary systems
+                 * anyway [above getaddrinfo/gai_strerror is]. We just let
+                 * system administrator figure this out...
+                 */
+                SYSerr(SYS_F_GETHOSTBYNAME, 1000 + h_errno);
 #else
                 SYSerr(SYS_F_GETHOSTBYNAME, WSAGetLastError());
 #endif
@@ -830,8 +818,7 @@ int BIO_lookup(const char *host, const char *service,
 
                 if (se == NULL) {
 #ifndef OPENSSL_SYS_WINDOWS
-                    BIOerr(BIO_F_BIO_LOOKUP, ERR_R_SYS_LIB);
-                    ERR_add_error_data(1, hstrerror(h_errno));
+                    SYSerr(SYS_F_GETSERVBYNAME, errno);
 #else
                     SYSerr(SYS_F_GETSERVBYNAME, WSAGetLastError());
 #endif

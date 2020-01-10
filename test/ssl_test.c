@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2016-2018 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the OpenSSL license (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -198,6 +198,17 @@ static int check_resumption(HANDSHAKE_RESULT *result, SSL_TEST_CTX *test_ctx)
     return 1;
 }
 
+static int check_tmp_key(HANDSHAKE_RESULT *result, SSL_TEST_CTX *test_ctx)
+{
+    if (test_ctx->expected_tmp_key_type == 0
+        || test_ctx->expected_tmp_key_type == result->tmp_key_type)
+        return 1;
+    fprintf(stderr, "Tmp key type mismatch, %s vs %s\n",
+            OBJ_nid2ln(test_ctx->expected_tmp_key_type),
+            OBJ_nid2ln(result->tmp_key_type));
+    return 0;
+}
+
 /*
  * This could be further simplified by constructing an expected
  * HANDSHAKE_RESULT, and implementing comparison methods for
@@ -218,6 +229,7 @@ static int check_test(HANDSHAKE_RESULT *result, SSL_TEST_CTX *test_ctx)
 #endif
         ret &= check_alpn(result, test_ctx);
         ret &= check_resumption(result, test_ctx);
+        ret &= check_tmp_key(result, test_ctx);
     }
     return ret;
 }
@@ -237,15 +249,21 @@ static int execute_test(SSL_TEST_FIXTURE fixture)
 #ifndef OPENSSL_NO_DTLS
     if (test_ctx->method == SSL_TEST_METHOD_DTLS) {
         server_ctx = SSL_CTX_new(DTLS_server_method());
+        TEST_check(SSL_CTX_set_max_proto_version(server_ctx, DTLS_MAX_VERSION));
         if (test_ctx->extra.server.servername_callback !=
             SSL_TEST_SERVERNAME_CB_NONE) {
             server2_ctx = SSL_CTX_new(DTLS_server_method());
             TEST_check(server2_ctx != NULL);
         }
         client_ctx = SSL_CTX_new(DTLS_client_method());
+        TEST_check(SSL_CTX_set_max_proto_version(client_ctx, DTLS_MAX_VERSION));
         if (test_ctx->handshake_mode == SSL_TEST_HANDSHAKE_RESUME) {
             resume_server_ctx = SSL_CTX_new(DTLS_server_method());
+            TEST_check(SSL_CTX_set_max_proto_version(resume_server_ctx,
+                                                     DTLS_MAX_VERSION));
             resume_client_ctx = SSL_CTX_new(DTLS_client_method());
+            TEST_check(SSL_CTX_set_max_proto_version(resume_client_ctx,
+                                                     DTLS_MAX_VERSION));
             TEST_check(resume_server_ctx != NULL);
             TEST_check(resume_client_ctx != NULL);
         }
@@ -253,6 +271,7 @@ static int execute_test(SSL_TEST_FIXTURE fixture)
 #endif
     if (test_ctx->method == SSL_TEST_METHOD_TLS) {
         server_ctx = SSL_CTX_new(TLS_server_method());
+        TEST_check(SSL_CTX_set_max_proto_version(server_ctx, TLS_MAX_VERSION));
         /* SNI on resumption isn't supported/tested yet. */
         if (test_ctx->extra.server.servername_callback !=
             SSL_TEST_SERVERNAME_CB_NONE) {
@@ -260,10 +279,15 @@ static int execute_test(SSL_TEST_FIXTURE fixture)
             TEST_check(server2_ctx != NULL);
         }
         client_ctx = SSL_CTX_new(TLS_client_method());
+        TEST_check(SSL_CTX_set_max_proto_version(client_ctx, TLS_MAX_VERSION));
 
         if (test_ctx->handshake_mode == SSL_TEST_HANDSHAKE_RESUME) {
             resume_server_ctx = SSL_CTX_new(TLS_server_method());
+            TEST_check(SSL_CTX_set_max_proto_version(resume_server_ctx,
+                                                     TLS_MAX_VERSION));
             resume_client_ctx = SSL_CTX_new(TLS_client_method());
+            TEST_check(SSL_CTX_set_max_proto_version(resume_client_ctx,
+                                                     TLS_MAX_VERSION));
             TEST_check(resume_server_ctx != NULL);
             TEST_check(resume_client_ctx != NULL);
         }

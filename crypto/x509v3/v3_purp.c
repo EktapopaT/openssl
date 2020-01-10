@@ -1,5 +1,5 @@
 /*
- * Copyright 1999-2016 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 1999-2018 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the OpenSSL license (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -78,11 +78,9 @@ int X509_check_purpose(X509 *x, int id, int ca)
 {
     int idx;
     const X509_PURPOSE *pt;
-    if (!(x->ex_flags & EXFLAG_SET)) {
-        CRYPTO_THREAD_write_lock(x->lock);
-        x509v3_cache_extensions(x);
-        CRYPTO_THREAD_unlock(x->lock);
-    }
+
+    x509v3_cache_extensions(x);
+
     /* Return if side-effect only call */
     if (id == -1)
         return 1;
@@ -277,6 +275,7 @@ int X509_supported_extension(X509_EXTENSION *ex)
         NID_subject_alt_name,   /* 85 */
         NID_basic_constraints,  /* 87 */
         NID_certificate_policies, /* 89 */
+        NID_crl_distribution_points, /* 103 */
         NID_ext_key_usage,      /* 126 */
 #ifndef OPENSSL_NO_RFC3779
         NID_sbgp_ipAddrBlock,   /* 290 */
@@ -351,10 +350,18 @@ static void x509v3_cache_extensions(X509 *x)
     ASN1_BIT_STRING *ns;
     EXTENDED_KEY_USAGE *extusage;
     X509_EXTENSION *ex;
-
     int i;
-    if (x->ex_flags & EXFLAG_SET)
+
+    /* fast lock-free check, see end of the function for details. */
+    if (x->ex_cached)
         return;
+
+    CRYPTO_THREAD_write_lock(x->lock);
+    if (x->ex_flags & EXFLAG_SET) {
+        CRYPTO_THREAD_unlock(x->lock);
+        return;
+    }
+
     X509_digest(x, EVP_sha1(), x->sha1_hash, NULL);
     /* V1 should mean no extensions ... */
     if (!X509_get_version(x))
@@ -488,6 +495,13 @@ static void x509v3_cache_extensions(X509 *x)
         }
     }
     x->ex_flags |= EXFLAG_SET;
+    CRYPTO_THREAD_unlock(x->lock);
+    /*
+     * It has to be placed after memory barrier, which is implied by unlock.
+     * Worst thing that can happen is that another thread proceeds to lock
+     * and checks x->ex_flags & EXFLAGS_SET. See beginning of the function.
+     */
+    x->ex_cached = 1;
 }
 
 /*-
@@ -540,11 +554,7 @@ void X509_set_proxy_pathlen(X509 *x, long l)
 
 int X509_check_ca(X509 *x)
 {
-    if (!(x->ex_flags & EXFLAG_SET)) {
-        CRYPTO_THREAD_write_lock(x->lock);
-        x509v3_cache_extensions(x);
-        CRYPTO_THREAD_unlock(x->lock);
-    }
+    x509v3_cache_extensions(x);
 
     return check_ca(x);
 }
@@ -758,6 +768,7 @@ int X509_check_issued(X509 *issuer, X509 *subject)
     if (X509_NAME_cmp(X509_get_subject_name(issuer),
                       X509_get_issuer_name(subject)))
         return X509_V_ERR_SUBJECT_ISSUER_MISMATCH;
+
     x509v3_cache_extensions(issuer);
     x509v3_cache_extensions(subject);
 
@@ -844,6 +855,13 @@ const ASN1_OCTET_STRING *X509_get0_subject_key_id(X509 *x)
     /* Call for side-effect of computing hash and caching extensions */
     X509_check_purpose(x, -1, -1);
     return x->skid;
+}
+
+const ASN1_OCTET_STRING *X509_get0_authority_key_id(X509 *x)
+{
+    /* Call for side-effect of computing hash and caching extensions */
+    X509_check_purpose(x, -1, -1);
+    return (x->akid != NULL ? x->akid->keyid : NULL);
 }
 
 long X509_get_pathlen(X509 *x)

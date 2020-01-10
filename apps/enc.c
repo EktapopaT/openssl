@@ -1,5 +1,5 @@
 /*
- * Copyright 1995-2016 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 1995-2018 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the OpenSSL license (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -31,6 +31,11 @@
 
 static int set_hex(char *in, unsigned char *out, int size);
 static void show_ciphers(const OBJ_NAME *name, void *bio_);
+
+struct doall_enc_ciphers {
+    BIO *bio;
+    int n;
+};
 
 typedef enum OPTION_choice {
     OPT_ERR = -1, OPT_EOF = 0, OPT_HELP,
@@ -91,7 +96,7 @@ int enc_main(int argc, char **argv)
     char *hkey = NULL, *hiv = NULL, *hsalt = NULL, *p;
     char *infile = NULL, *outfile = NULL, *prog;
     char *str = NULL, *passarg = NULL, *pass = NULL, *strbuf = NULL;
-    char mbuf[sizeof magic - 1];
+    char mbuf[sizeof(magic) - 1];
     OPTION_CHOICE o;
     int bsize = BSIZE, verbose = 0, debug = 0, olb64 = 0, nosalt = 0;
     int enc = 1, printkey = 0, i, k;
@@ -100,6 +105,7 @@ int enc_main(int argc, char **argv)
     unsigned char key[EVP_MAX_KEY_LENGTH], iv[EVP_MAX_IV_LENGTH];
     unsigned char *buff = NULL, salt[PKCS5_SALT_LEN];
     long n;
+    struct doall_enc_ciphers dec;
 #ifdef ZLIB
     int do_zlib = 0;
     BIO *bzl = NULL;
@@ -134,10 +140,13 @@ int enc_main(int argc, char **argv)
             ret = 0;
             goto end;
         case OPT_LIST:
-            BIO_printf(bio_err, "Supported ciphers:\n");
+            BIO_printf(bio_out, "Supported ciphers:\n");
+            dec.bio = bio_out;
+            dec.n = 0;
             OBJ_NAME_do_all_sorted(OBJ_NAME_TYPE_CIPHER_METH,
-                                   show_ciphers, bio_err);
-            BIO_printf(bio_err, "\n");
+                                   show_ciphers, &dec);
+            BIO_printf(bio_out, "\n");
+            ret = 0;
             goto end;
         case OPT_E:
             enc = 1;
@@ -209,7 +218,7 @@ int enc_main(int argc, char **argv)
             in = bio_open_default(opt_arg(), 'r', FORMAT_TEXT);
             if (in == NULL)
                 goto opthelp;
-            i = BIO_gets(in, buf, sizeof buf);
+            i = BIO_gets(in, buf, sizeof(buf));
             BIO_free(in);
             in = NULL;
             if (i <= 0) {
@@ -248,6 +257,10 @@ int enc_main(int argc, char **argv)
             break;
         }
     }
+    if (opt_num_rest() != 0) {
+        BIO_printf(bio_err, "Extra arguments given.\n");
+        goto opthelp;
+    }
 
     if (cipher && EVP_CIPHER_flags(cipher) & EVP_CIPH_FLAG_AEAD_CIPHER) {
         BIO_printf(bio_err, "%s: AEAD ciphers not supported\n", prog);
@@ -282,7 +295,6 @@ int enc_main(int argc, char **argv)
     buff = app_malloc(EVP_ENCODE_LENGTH(bsize), "evp buffer");
 
     if (infile == NULL) {
-        unbuffer(stdin);
         in = dup_bio_in(informat);
     } else
         in = bio_open_default(infile, 'r', informat);
@@ -303,7 +315,7 @@ int enc_main(int argc, char **argv)
             for (;;) {
                 char prompt[200];
 
-                BIO_snprintf(prompt, sizeof prompt, "enter %s %s password:",
+                BIO_snprintf(prompt, sizeof(prompt), "enter %s %s password:",
                              OBJ_nid2ln(EVP_CIPHER_nid(cipher)),
                              (enc) ? "encryption" : "decryption");
                 strbuf[0] = '\0';
@@ -390,31 +402,31 @@ int enc_main(int argc, char **argv)
             else {
                 if (enc) {
                     if (hsalt) {
-                        if (!set_hex(hsalt, salt, sizeof salt)) {
+                        if (!set_hex(hsalt, salt, sizeof(salt))) {
                             BIO_printf(bio_err, "invalid hex salt value\n");
                             goto end;
                         }
-                    } else if (RAND_bytes(salt, sizeof salt) <= 0)
+                    } else if (RAND_bytes(salt, sizeof(salt)) <= 0)
                         goto end;
                     /*
                      * If -P option then don't bother writing
                      */
                     if ((printkey != 2)
                         && (BIO_write(wbio, magic,
-                                      sizeof magic - 1) != sizeof magic - 1
+                                      sizeof(magic) - 1) != sizeof(magic) - 1
                             || BIO_write(wbio,
                                          (char *)salt,
-                                         sizeof salt) != sizeof salt)) {
+                                         sizeof(salt)) != sizeof(salt))) {
                         BIO_printf(bio_err, "error writing output file\n");
                         goto end;
                     }
-                } else if (BIO_read(rbio, mbuf, sizeof mbuf) != sizeof mbuf
+                } else if (BIO_read(rbio, mbuf, sizeof(mbuf)) != sizeof(mbuf)
                            || BIO_read(rbio,
                                        (unsigned char *)salt,
-                                       sizeof salt) != sizeof salt) {
+                                       sizeof(salt)) != sizeof(salt)) {
                     BIO_printf(bio_err, "error reading input file\n");
                     goto end;
-                } else if (memcmp(mbuf, magic, sizeof magic - 1)) {
+                } else if (memcmp(mbuf, magic, sizeof(magic) - 1)) {
                     BIO_printf(bio_err, "bad magic number\n");
                     goto end;
                 }
@@ -441,7 +453,7 @@ int enc_main(int argc, char **argv)
             int siz = EVP_CIPHER_iv_length(cipher);
             if (siz == 0) {
                 BIO_printf(bio_err, "warning: iv not use by this cipher\n");
-            } else if (!set_hex(hiv, iv, sizeof iv)) {
+            } else if (!set_hex(hiv, iv, sizeof(iv))) {
                 BIO_printf(bio_err, "invalid hex iv value\n");
                 goto end;
             }
@@ -539,8 +551,8 @@ int enc_main(int argc, char **argv)
 
     ret = 0;
     if (verbose) {
-        BIO_printf(bio_err, "bytes read   :%8"PRIu64"\n", BIO_number_read(in));
-        BIO_printf(bio_err, "bytes written:%8"PRIu64"\n", BIO_number_written(out));
+        BIO_printf(bio_err, "bytes read   :%8"BIO_PRI64"u\n", BIO_number_read(in));
+        BIO_printf(bio_err, "bytes written:%8"BIO_PRI64"u\n", BIO_number_written(out));
     }
  end:
     ERR_print_errors(bio_err);
@@ -558,20 +570,27 @@ int enc_main(int argc, char **argv)
     return (ret);
 }
 
-static void show_ciphers(const OBJ_NAME *name, void *bio_)
+static void show_ciphers(const OBJ_NAME *name, void *arg)
 {
-    BIO *bio = bio_;
-    static int n;
+    struct doall_enc_ciphers *dec = (struct doall_enc_ciphers *)arg;
+    const EVP_CIPHER *cipher;
 
     if (!islower((unsigned char)*name->name))
         return;
 
-    BIO_printf(bio, "-%-25s", name->name);
-    if (++n == 3) {
-        BIO_printf(bio, "\n");
-        n = 0;
+    /* Filter out ciphers that we cannot use */
+    cipher = EVP_get_cipherbyname(name->name);
+    if (cipher == NULL ||
+            (EVP_CIPHER_flags(cipher) & EVP_CIPH_FLAG_AEAD_CIPHER) != 0 ||
+            EVP_CIPHER_mode(cipher) == EVP_CIPH_XTS_MODE)
+        return;
+
+    BIO_printf(dec->bio, "-%-25s", name->name);
+    if (++dec->n == 3) {
+        BIO_printf(dec->bio, "\n");
+        dec->n = 0;
     } else
-        BIO_printf(bio, " ");
+        BIO_printf(dec->bio, " ");
 }
 
 static int set_hex(char *in, unsigned char *out, int size)

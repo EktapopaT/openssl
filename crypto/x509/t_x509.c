@@ -71,8 +71,13 @@ int X509_print_ex(BIO *bp, X509 *x, unsigned long nmflags,
     }
     if (!(cflag & X509_FLAG_NO_VERSION)) {
         l = X509_get_version(x);
-        if (BIO_printf(bp, "%8sVersion: %lu (0x%lx)\n", "", l + 1, l) <= 0)
-            goto err;
+        if (l >= 0 && l <= 2) {
+            if (BIO_printf(bp, "%8sVersion: %ld (0x%lx)\n", "", l + 1, (unsigned long)l) <= 0)
+                goto err;
+        } else {
+            if (BIO_printf(bp, "%8sVersion: Unknown (%ld)\n", "", l) <= 0)
+                goto err;
+        }
     }
     if (!(cflag & X509_FLAG_NO_SERIAL)) {
 
@@ -88,12 +93,15 @@ int X509_print_ex(BIO *bp, X509 *x, unsigned long nmflags,
             l = -1;
         }
         if (l != -1) {
+            unsigned long ul;
             if (bs->type == V_ASN1_NEG_INTEGER) {
-                l = -l;
+                ul = 0 - (unsigned long)l;
                 neg = "-";
-            } else
+            } else {
+                ul = l;
                 neg = "";
-            if (BIO_printf(bp, " %s%lu (%s0x%lx)\n", neg, l, neg, l) <= 0)
+            }
+            if (BIO_printf(bp, " %s%lu (%s0x%lx)\n", neg, ul, neg, ul) <= 0)
                 goto err;
         } else {
             neg = (bs->type == V_ASN1_NEG_INTEGER) ? " (Negative)" : "";
@@ -332,7 +340,7 @@ int X509_aux_print(BIO *out, X509 *x, int indent)
                 BIO_puts(out, ", ");
             else
                 first = 0;
-            OBJ_obj2txt(oidstr, sizeof oidstr,
+            OBJ_obj2txt(oidstr, sizeof(oidstr),
                         sk_ASN1_OBJECT_value(trust, i), 0);
             BIO_puts(out, oidstr);
         }
@@ -347,7 +355,7 @@ int X509_aux_print(BIO *out, X509 *x, int indent)
                 BIO_puts(out, ", ");
             else
                 first = 0;
-            OBJ_obj2txt(oidstr, sizeof oidstr,
+            OBJ_obj2txt(oidstr, sizeof(oidstr),
                         sk_ASN1_OBJECT_value(reject, i), 0);
             BIO_puts(out, oidstr);
         }

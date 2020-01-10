@@ -1,5 +1,5 @@
 /*
- * Copyright 2015-2016 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2015-2019 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the OpenSSL license (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -115,6 +115,7 @@ void ossl_statem_set_renegotiate(SSL *s)
  */
 void ossl_statem_set_error(SSL *s)
 {
+    s->statem.in_init = 1;
     s->statem.state = MSG_FLOW_ERROR;
 }
 
@@ -241,10 +242,10 @@ static int state_machine(SSL *s, int server)
             return -1;
     }
 #ifndef OPENSSL_NO_SCTP
-    if (SSL_IS_DTLS(s)) {
+    if (SSL_IS_DTLS(s) && BIO_dgram_is_sctp(SSL_get_wbio(s))) {
         /*
          * Notify SCTP BIO socket to enter handshake mode and prevent stream
-         * identifier other than 0. Will be ignored if no SCTP is used.
+         * identifier other than 0.
          */
         BIO_ctrl(SSL_get_wbio(s), BIO_CTRL_DGRAM_SCTP_SET_IN_HANDSHAKE,
                  st->in_handshake, NULL);
@@ -342,6 +343,14 @@ static int state_machine(SSL *s, int server)
         if (server) {
             if (st->state != MSG_FLOW_RENEGOTIATE) {
                 s->ctx->stats.sess_accept++;
+            } else if ((s->options & SSL_OP_NO_RENEGOTIATION)) {
+                /*
+                 * Shouldn't happen? The record layer should have prevented this
+                 */
+                SSLerr(SSL_F_STATE_MACHINE, ERR_R_INTERNAL_ERROR);
+                ssl3_send_alert(s, SSL3_AL_FATAL, SSL_AD_INTERNAL_ERROR);
+                ossl_statem_set_error(s);
+                goto end;
             } else if (!s->s3->send_connection_binding &&
                        !(s->options &
                          SSL_OP_ALLOW_UNSAFE_LEGACY_RENEGOTIATION)) {
@@ -361,6 +370,8 @@ static int state_machine(SSL *s, int server)
                  */
                 s->ctx->stats.sess_accept_renegotiate++;
             }
+
+            s->s3->tmp.cert_request = 0;
         } else {
             s->ctx->stats.sess_connect++;
 
@@ -368,7 +379,7 @@ static int state_machine(SSL *s, int server)
             memset(s->s3->client_random, 0, sizeof(s->s3->client_random));
             s->hit = 0;
 
-            s->s3->tmp.cert_request = 0;
+            s->s3->tmp.cert_req = 0;
 
             if (SSL_IS_DTLS(s)) {
                 st->use_timer = 1;
@@ -415,10 +426,10 @@ static int state_machine(SSL *s, int server)
     st->in_handshake--;
 
 #ifndef OPENSSL_NO_SCTP
-    if (SSL_IS_DTLS(s)) {
+    if (SSL_IS_DTLS(s) && BIO_dgram_is_sctp(SSL_get_wbio(s))) {
         /*
          * Notify SCTP BIO socket to leave handshake mode and allow stream
-         * identifier other than 0. Will be ignored if no SCTP is used.
+         * identifier other than 0.
          */
         BIO_ctrl(SSL_get_wbio(s), BIO_CTRL_DGRAM_SCTP_SET_IN_HANDSHAKE,
                  st->in_handshake, NULL);
@@ -546,10 +557,8 @@ static SUB_STATE_RETURN read_state_machine(SSL *s)
              * Validate that we are allowed to move to the new state and move
              * to that state if so
              */
-            if (!transition(s, mt)) {
-                ossl_statem_set_error(s);
+            if (!transition(s, mt))
                 return SUB_STATE_ERROR;
-            }
 
             if (s->s3->tmp.message_size > max_message_size(s)) {
                 ssl3_send_alert(s, SSL3_AL_FATAL, SSL_AD_ILLEGAL_PARAMETER);
@@ -848,26 +857,3 @@ int ossl_statem_app_data_allowed(SSL *s)
 
     return 0;
 }
-
-#ifndef OPENSSL_NO_SCTP
-/*
- * Set flag used by SCTP to determine whether we are in the read sock state
- */
-void ossl_statem_set_sctp_read_sock(SSL *s, int read_sock)
-{
-    s->statem.in_sctp_read_sock = read_sock;
-}
-
-/*
- * Called by the record layer to determine whether we are in the read sock
- * state or not.
- *
- * Return values are:
- *   1: Yes (we are in the read sock state)
- *   0: No (we are not in the read sock state)
- */
-int ossl_statem_in_sctp_read_sock(SSL *s)
-{
-    return s->statem.in_sctp_read_sock;
-}
-#endif

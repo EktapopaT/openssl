@@ -1,5 +1,5 @@
 /*
- * Copyright 1995-2016 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 1995-2018 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the OpenSSL license (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -163,6 +163,8 @@
 # define l2n3(l,c)       (((c)[0]=(unsigned char)(((l)>>16)&0xff), \
                            (c)[1]=(unsigned char)(((l)>> 8)&0xff), \
                            (c)[2]=(unsigned char)(((l)    )&0xff)),(c)+=3)
+
+# define SSL_MAX_2_BYTE_LEN     (0xffff)
 
 /*
  * DTLS version numbers are strange because they're inverted. Except for
@@ -347,6 +349,9 @@
 
 /* we have used 0000003f - 26 bits left to go */
 
+# define SSL_IS_FIRST_HANDSHAKE(S) ((s)->s3->tmp.finish_md_len == 0 \
+                                    || (s)->s3->tmp.peer_finish_md_len == 0)
+
 /* Check if an SSL structure is using DTLS */
 # define SSL_IS_DTLS(s)  (s->method->ssl3_enc->enc_flags & SSL_ENC_FLAG_DTLS)
 /* See if we need explicit IV */
@@ -378,7 +383,8 @@
 # define SSL_CLIENT_USE_SIGALGS(s)        \
     SSL_CLIENT_USE_TLS1_2_CIPHERS(s)
 
-# define SSL_USE_ETM(s) (s->s3->flags & TLS1_FLAGS_ENCRYPT_THEN_MAC)
+# define SSL_READ_ETM(s) (s->s3->flags & TLS1_FLAGS_ENCRYPT_THEN_MAC_READ)
+# define SSL_WRITE_ETM(s) (s->s3->flags & TLS1_FLAGS_ENCRYPT_THEN_MAC_WRITE)
 
 /* Mostly for SSLv3 */
 # define SSL_PKEY_RSA_ENC        0
@@ -536,7 +542,7 @@ struct ssl_session_st {
     const SSL_CIPHER *cipher;
     unsigned long cipher_id;    /* when ASN.1 loaded, this needs to be used to
                                  * load the 'cipher' structure */
-    STACK_OF(SSL_CIPHER) *ciphers; /* shared ciphers? */
+    STACK_OF(SSL_CIPHER) *ciphers; /* ciphers offered by the client */
     CRYPTO_EX_DATA ex_data;     /* application specific data */
     /*
      * These are used to make removal of session-ids more efficient and to
@@ -615,7 +621,7 @@ struct ssl_ctx_st {
     /*
      * This can have one of 2 values, ored together, SSL_SESS_CACHE_CLIENT,
      * SSL_SESS_CACHE_SERVER, Default is SSL_SESSION_CACHE_SERVER, which
-     * means only SSL_accept which cache SSL_SESSIONS.
+     * means only SSL_accept will cache SSL_SESSIONS.
      */
     uint32_t session_cache_mode;
     /*
@@ -1077,7 +1083,7 @@ struct ssl_st {
     /* TLS pre-shared secret session resumption */
     tls_session_secret_cb_fn tls_session_secret_cb;
     void *tls_session_secret_cb_arg;
-    SSL_CTX *initial_ctx;       /* initial ctx, used to store sessions */
+    SSL_CTX *session_ctx;       /* initial ctx, used to store sessions */
 # ifndef OPENSSL_NO_NEXTPROTONEG
     /*
      * Next protocol negotiation. For the client, this is the protocol that
@@ -1089,7 +1095,6 @@ struct ssl_st {
     unsigned char *next_proto_negotiated;
     unsigned char next_proto_negotiated_len;
 # endif
-# define session_ctx initial_ctx
     /* What we'll do */
     STACK_OF(SRTP_PROTECTION_PROFILE) *srtp_profiles;
     /* What's been chosen */
@@ -1111,6 +1116,10 @@ struct ssl_st {
      */
     unsigned char *alpn_client_proto_list;
     unsigned alpn_client_proto_list_len;
+
+    /* Set to one if we have negotiated ETM */
+    int tlsext_use_etm;
+
     /*-
      * 1 if we are renegotiating.
      * 2 if we are a server and are inside a handshake
@@ -2062,11 +2071,11 @@ __owur size_t tls12_copy_sigalgs(SSL *s, unsigned char *out,
                                  const unsigned char *psig, size_t psiglen);
 __owur int tls1_save_sigalgs(SSL *s, const unsigned char *data, int dsize);
 __owur int tls1_process_sigalgs(SSL *s);
-__owur size_t tls12_get_psigalgs(SSL *s, const unsigned char **psigs);
+__owur size_t tls12_get_psigalgs(SSL *s, int sent, const unsigned char **psigs);
 __owur int tls12_check_peer_sigalg(const EVP_MD **pmd, SSL *s,
                                    const unsigned char *sig, EVP_PKEY *pkey);
 void ssl_set_client_disabled(SSL *s);
-__owur int ssl_cipher_disabled(SSL *s, const SSL_CIPHER *c, int op);
+__owur int ssl_cipher_disabled(SSL *s, const SSL_CIPHER *c, int op, int echde);
 
 __owur int ssl_add_clienthello_use_srtp_ext(SSL *s, unsigned char *p, int *len,
                                             int maxlen);
@@ -2113,6 +2122,8 @@ __owur int custom_ext_add(SSL *s, int server, unsigned char **pret,
 
 __owur int custom_exts_copy(custom_ext_methods *dst,
                             const custom_ext_methods *src);
+__owur int custom_exts_copy_flags(custom_ext_methods *dst,
+                                  const custom_ext_methods *src);
 void custom_exts_free(custom_ext_methods *exts);
 
 void ssl_comp_free_compression_methods_int(void);
